@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "Chrome Flow - AI Workspace",
+  "version": "1.0.0",
+  "description": "AI-powered workspace with Halo Strip toolbar. Start sessions, go live, and get AI assistance on any webpage.",
+  "permissions": [
+    "tabs",
+    "activeTab",
+    "storage",
+    "tabCapture",
+    "offscreen"
+  ],
+  "host_permissions": [
+    "<all_urls>",
+    "https://generativelanguage.googleapis.com/*",
+    "https://*.mongodb-api.com/*",
+    "https://*.mongodb.com/*"
+  ],
+  "action": {
+    "default_icon": "icons/icon.svg",
+    "default_title": "Chrome Flow - Click to toggle strip"
+  },
+  "background": {
+    "service_worker": "background.bundle.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.bundle.js"],
+      "css": ["halo-strip.css"],
+      "run_at": "document_end"
+    }
+  ],
+  "icons": {
+    "128": "icons/icon.svg"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["summary.html", "summary.bundle.js", "summary.css", "library.html", "library.bundle.js", "library.css", "halo-strip.css"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

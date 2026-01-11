@@ -1,0 +1,26 @@
+{
+  "name": "cue",
+  "version": "1.0.0",
+  "description": "cue - AI Meeting Summarizer with Veo 3 Video Generation",
+  "scripts": {
+    "build": "webpack --config extension/config/webpack.config.js --mode production",
+    "dev": "webpack --config extension/config/webpack.config.js --mode development --watch",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.23.0",
+    "@babel/preset-env": "^7.23.0",
+    "@babel/preset-react": "^7.23.0",
+    "babel-loader": "^9.1.3",
+    "copy-webpack-plugin": "^11.0.0",
+    "css-loader": "^6.8.1",
+    "rimraf": "^5.0.5",
+    "style-loader": "^3.3.3",
+    "webpack": "^5.89.0",
+    "webpack-cli": "^5.1.4"
+  }
+}
