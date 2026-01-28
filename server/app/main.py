@@ -58,12 +58,15 @@ class DashboardConnectionManager:
     async def broadcast(self, message: Dict[str, Any]):
         """Broadcast message to all connected dashboards."""
         if not self.active_connections:
+            print(f"[cue] No active dashboard connections to broadcast: {message.get('type', 'unknown')}")
             return
         
+        print(f"[cue] Broadcasting {message.get('type', 'unknown')} to {len(self.active_connections)} dashboard(s)")
         disconnected = set()
         for connection in self.active_connections:
             try:
                 await connection.send_json(message)
+                print(f"[cue] Successfully sent {message.get('type', 'unknown')} to dashboard")
             except Exception as e:
                 print(f"Failed to send to dashboard: {e}")
                 disconnected.add(connection)
@@ -302,7 +305,7 @@ async def save_session_endpoint(payload: SessionSaveRequest) -> Dict[str, Any]:
         }
 
         # Broadcast the full session result to dashboard FIRST (immediate display)
-        await dashboard_manager.broadcast({
+        broadcast_data = {
             "type": "SESSION_RESULT",
             "sessionId": session_id,  # Use temp UUID for immediate display
             "title": payload.title,
@@ -311,7 +314,12 @@ async def save_session_endpoint(payload: SessionSaveRequest) -> Dict[str, Any]:
             "transcript": transcript,
             "summary": summary,
             "created_at": datetime.utcnow().isoformat(),
-        })
+        }
+        
+        print(f"[cue] Broadcasting SESSION_RESULT: sessionId={session_id}, title={payload.title}, has_summary={bool(summary)}, has_transcript={bool(transcript)}")
+        print(f"[cue] Active WebSocket connections: {len(dashboard_manager.active_connections)}")
+        
+        await dashboard_manager.broadcast(broadcast_data)
 
         print(f"[cue] Session result broadcasted: {session_id}")
 

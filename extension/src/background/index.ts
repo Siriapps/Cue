@@ -66,13 +66,12 @@ async function stopSessionRecording(payload: {
   audio_base64: string;
   mime_type: string;
 }): Promise<{ success: boolean; sessionId?: string; error?: string }> {
-  if (sessionState === "idle" || !sessionInfo) {
-    return { success: false, error: "No active session" };
-  }
+  // Note: With mic recording in content script, we don't need to check session state
+  // The audio is already captured, so we can send it directly to the backend
 
   try {
     console.log("[cue] Saving session, audio size:", payload.audio_base64.length, "base64 chars");
-
+    
     // Send to backend for transcription and save
     const response = await fetch(`${API_BASE}/sessions/save`, {
       method: "POST",
@@ -88,9 +87,11 @@ async function stopSessionRecording(payload: {
 
     const data = await response.json();
 
-    // Cleanup
-    sessionInfo = null;
-    sessionState = "idle";
+    // Cleanup (only if we had session info)
+    if (sessionInfo) {
+      sessionInfo = null;
+      sessionState = "idle";
+    }
 
     // Notify content script
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });

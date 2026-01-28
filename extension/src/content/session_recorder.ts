@@ -15,37 +15,42 @@ export async function startMicRecording(): Promise<void> {
     return;
   }
 
-  // Request microphone access directly in content script
-  audioStream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
-    },
-  });
-
-  audioChunks = [];
-  const options = { mimeType: "audio/webm;codecs=opus" };
-
   try {
-    mediaRecorder = new MediaRecorder(audioStream, options);
-  } catch {
-    mediaRecorder = new MediaRecorder(audioStream);
-  }
+    // Request microphone access directly in content script
+    audioStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+    });
 
-  mediaRecorder.ondataavailable = (event) => {
-    if (event.data && event.data.size > 0) {
-      audioChunks.push(event.data);
+    audioChunks = [];
+    const options = { mimeType: "audio/webm;codecs=opus" };
+
+    try {
+      mediaRecorder = new MediaRecorder(audioStream, options);
+    } catch (err: any) {
+      mediaRecorder = new MediaRecorder(audioStream);
     }
-  };
 
-  mediaRecorder.onerror = (event: Event) => {
-    console.error("[cue] MediaRecorder error:", event);
-  };
+    mediaRecorder.ondataavailable = (event) => {
+      if (event.data && event.data.size > 0) {
+        audioChunks.push(event.data);
+      }
+    };
 
-  mediaRecorder.start(1000); // Collect chunks every second
-  isRecording = true;
-  console.log("[cue] Microphone recording started");
+    mediaRecorder.onerror = (event: Event) => {
+      console.error("[cue] MediaRecorder error:", event);
+    };
+
+    mediaRecorder.start(1000); // Collect chunks every second
+    isRecording = true;
+    console.log("[cue] Microphone recording started");
+  } catch (error: any) {
+    isRecording = false;
+    throw error;
+  }
 }
 
 export function pauseMicRecording(): void {

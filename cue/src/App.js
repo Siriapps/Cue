@@ -222,18 +222,43 @@ function App() {
     try {
       setLoading(true);
       
-      // Fetch from /summaries and transform data to match SessionCard format
-      const response = await fetch(`${ADK_API_URL}/summaries?limit=50`);
+      // Fetch from /sessions endpoint (recorded sessions) and /summaries (prism summaries)
+      const [sessionsResponse, summariesResponse] = await Promise.all([
+        fetch(`${ADK_API_URL}/sessions?limit=50`).catch(() => ({ ok: false, json: () => ({ sessions: [] }) })),
+        fetch(`${ADK_API_URL}/summaries?limit=50`).catch(() => ({ ok: false, json: () => ({ items: [] }) }))
+      ]);
 
-      if (!response.ok) {
-        throw new Error(`Failed to fetch summaries: ${response.status}`);
-      }
-
-      const result = await response.json();
-      const items = result.items || [];
+      const sessionsResult = sessionsResponse.ok ? await sessionsResponse.json() : { sessions: [] };
+      const summariesResult = summariesResponse.ok ? await summariesResponse.json() : { items: [] };
       
-      // Transform summary data to session card format
-      const transformedSessions = items.map((item, index) => {
+      const sessions = sessionsResult.sessions || [];
+      const summaryItems = summariesResult.items || [];
+      
+      // Transform sessions to session card format
+      const transformedSessions = sessions.map((session) => {
+        const summary = session.summary || {};
+        return {
+          sessionId: session._id?.$oid || session._id || session.sessionId,
+          title: session.title || 'Untitled Session',
+          source_url: session.source_url || '',
+          transcript: session.transcript || '',
+          duration_seconds: session.duration_seconds || 0,
+          created_at: session.created_at || session._id?.$date || new Date().toISOString(),
+          summary: {
+            tldr: summary.tldr || summary.summary_tldr || 'No summary available',
+            key_points: summary.key_points || [],
+            action_items: (summary.action_items || summary.tasks || []).map(item => ({
+              task: typeof item === 'string' ? item : (item.task || item.action || item),
+              priority: item.priority || 'Medium'
+            })),
+            sentiment: summary.sentiment || 'Neutral',
+            topic: summary.topic || ''
+          }
+        };
+      });
+      
+      // Transform summary data to session card format (for Prism summaries)
+      const transformedSummaries = summaryItems.map((item, index) => {
         const payload = item.payload || {};
         const resultData = item.result || {};
         
@@ -282,7 +307,14 @@ function App() {
         };
       });
       
-      setSessions(transformedSessions);
+      // Combine sessions and summaries, sort by date (newest first)
+      const allTransformed = [...transformedSessions, ...transformedSummaries].sort((a, b) => {
+        const dateA = new Date(a.created_at).getTime();
+        const dateB = new Date(b.created_at).getTime();
+        return dateB - dateA;
+      });
+      
+      setSessions(allTransformed);
     } catch (error) {
       console.error('Error loading sessions:', error);
       setSessions([]);
@@ -359,9 +391,6 @@ function App() {
   };
 
   // Transform reels to session format for library display
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/d175bd2d-d0e3-45e2-bafc-edc26c33de53',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.js:339',message:'Computing reelsAsSessions',data:{reelsType:typeof reels,reelsIsArray:Array.isArray(reels),reelsLength:reels?.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-  // #endregion
   const reelsAsSessions = (reels || []).map((reel, index) => ({
     sessionId: reel.id || `reel-${index}`,
     title: reel.title || 'Untitled Reel',
@@ -386,27 +415,16 @@ function App() {
 
   // Combine live sessions (from WebSocket), fetched sessions (from DB/API), and reels
   // Use a Set to deduplicate by sessionId/id
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/d175bd2d-d0e3-45e2-bafc-edc26c33de53',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.js:362',message:'Starting sessionMap merge',data:{liveSessionsCount:liveSessions.length,sessionsCount:sessions.length,reelsAsSessionsCount:reelsAsSessions.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-  // #endregion
   const sessionMap = new Map();
 
   // Add live sessions first (highest priority)
   liveSessions.forEach(s => {
-    // #region agent log
-    const sessionId = s.sessionId || s._id;
-    fetch('http://127.0.0.1:7242/ingest/d175bd2d-d0e3-45e2-bafc-edc26c33de53',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.js:367',message:'Adding live session to map',data:{hasSessionId:!!s.sessionId,has_id:!!s._id,sessionId:sessionId,title:s.title},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-    // #endregion
     const id = s.sessionId || s._id;
     if (id) sessionMap.set(id, s);
   });
 
   // Add regular sessions
   sessions.forEach(s => {
-    // #region agent log
-    const sessionId = s.sessionId || s._id;
-    fetch('http://127.0.0.1:7242/ingest/d175bd2d-d0e3-45e2-bafc-edc26c33de53',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.js:370',message:'Adding regular session to map',data:{hasSessionId:!!s.sessionId,has_id:!!s._id,sessionId:sessionId,title:s.title,mapHasId:sessionMap.has(sessionId)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-    // #endregion
     const id = s.sessionId || s._id;
     if (id && !sessionMap.has(id)) {
       sessionMap.set(id, s);
@@ -415,17 +433,11 @@ function App() {
 
   // Add reels (only if not already present)
   reelsAsSessions.forEach(s => {
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/d175bd2d-d0e3-45e2-bafc-edc26c33de53',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.js:377',message:'Adding reel session to map',data:{sessionId:s.sessionId,title:s.title,mapHasId:sessionMap.has(s.sessionId)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-    // #endregion
     if (s.sessionId && !sessionMap.has(s.sessionId)) {
       sessionMap.set(s.sessionId, s);
     }
   });
 
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/d175bd2d-d0e3-45e2-bafc-edc26c33de53',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.js:383',message:'SessionMap merge complete',data:{finalMapSize:sessionMap.size},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-  // #endregion
   const allSessions = Array.from(sessionMap.values());
 
   const filteredSessions = allSessions.filter(session => {
@@ -709,17 +721,17 @@ function App() {
                       />
                     ))}
 
-                    {/* Completed Session Cards */}
-                    {filteredSessions.map((session, index) => (
-                      <SessionCard
-                        key={session.sessionId || session._id || index}
-                        session={session}
-                        formatDate={formatDate}
-                        formatDuration={formatDuration}
-                        onClick={setSelectedSession}
-                        onDelete={handleDeleteSession}
-                      />
-                    ))}
+                  {/* Completed Session Cards */}
+                  {filteredSessions.map((session, index) => (
+                    <SessionCard
+                      key={session.sessionId || session._id || index}
+                      session={session}
+                      formatDate={formatDate}
+                      formatDuration={formatDuration}
+                      onClick={setSelectedSession}
+                      onDelete={handleDeleteSession}
+                    />
+                  ))}
 
                   {/* New Session Card */}
                   <div className="session-card new-session-card" onClick={handleRecordNew}>
