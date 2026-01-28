@@ -1,52 +1,288 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import SessionCard from './components/SessionCard';
+import ProcessingSessionCard from './components/ProcessingSessionCard';
+import AudioSessionCard from './components/AudioSessionCard';
+import PrismTaskCard from './components/PrismTaskCard';
+import ReelsFeed from './components/ReelsFeed';
+import AvatarViewer from './components/AvatarViewer';
+import DashboardHalo from './components/DashboardHalo';
+import SessionDetail from './components/SessionDetail';
 import './App.css';
 
-const API_URL = 'http://localhost:3000';
+const ADK_API_URL = 'http://localhost:8000';
+const WS_URL = 'ws://localhost:8000';
 
 function App() {
   const [sessions, setSessions] = useState([]);
+  const [liveSessions, setLiveSessions] = useState([]); // Sessions from WebSocket (not saved to DB)
+  const [processingSessions, setProcessingSessions] = useState([]);
+  const [summaries, setSummaries] = useState([]);
+  const [diagrams, setDiagrams] = useState([]);
+  const [reels, setReels] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState('all'); // 'all', 'today', 'history'
+  const [filter, setFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [activeNav, setActiveNav] = useState('library');
+  const [selectedSession, setSelectedSession] = useState(null);
+  
+  // Avatar state
+  const [avatarPose, setAvatarPose] = useState(null);
+  const [isAvatarLive, setIsAvatarLive] = useState(false);
+  const [motionContext, setMotionContext] = useState(null);
+  const [poseHistory, setPoseHistory] = useState([]);
+  const avatarWsRef = useRef(null);
+  
+  // Dashboard WebSocket for progress updates
+  const dashboardWsRef = useRef(null);
+  const [dashboardConnected, setDashboardConnected] = useState(false);
+
+  // Connect to dashboard WebSocket for progress updates
+  const connectDashboardWS = useCallback(() => {
+    if (dashboardWsRef.current?.readyState === WebSocket.OPEN) return;
+
+    const ws = new WebSocket(`${WS_URL}/ws/dashboard`);
+    
+    ws.onopen = () => {
+      console.log('Dashboard WebSocket connected');
+      setDashboardConnected(true);
+    };
+    
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        
+        if (data.type === 'SESSION_PROCESSING_START') {
+          // Add new processing session
+          setProcessingSessions(prev => [...prev, {
+            id: data.sessionId,
+            title: data.title || 'Processing Session...',
+            source_url: data.source_url || '',
+            duration_seconds: data.duration_seconds || 0,
+            progress: 0,
+            currentStep: 'transcribing',
+          }]);
+        }
+        
+        else if (data.type === 'SESSION_PROGRESS') {
+          // Update progress for existing processing session
+          setProcessingSessions(prev => prev.map(s => 
+            s.id === data.sessionId 
+              ? { ...s, progress: data.progress, currentStep: data.step }
+              : s
+          ));
+        }
+        
+        else if (data.type === 'SESSION_RESULT') {
+          // Remove from processing
+          setProcessingSessions(prev => prev.filter(s => s.id !== data.sessionId));
+          
+          // Add the completed session to liveSessions for immediate display
+          const newSession = {
+            sessionId: data.sessionId,
+            title: data.title,
+            source_url: data.source_url,
+            duration_seconds: data.duration_seconds,
+            transcript: data.transcript,
+            summary: data.summary,
+            created_at: data.created_at,
+            isLive: true, // Mark as live session for immediate display
+          };
+          
+          setLiveSessions(prev => [newSession, ...prev]);
+          console.log('[cue] Live session added:', data.title);
+          
+          // Also refresh sessions from DB (session is now saved to MongoDB)
+          setTimeout(() => {
+            loadSessions();
+          }, 1000); // Small delay to ensure MongoDB save is complete
+        }
+        
+        else if (data.type === 'SESSION_COMPLETE') {
+          // Legacy handler - remove from processing
+          setProcessingSessions(prev => prev.filter(s => s.id !== data.sessionId));
+        }
+        
+        else if (data.type === 'SESSION_ERROR') {
+          // Remove from processing on error
+          setProcessingSessions(prev => prev.filter(s => s.id !== data.sessionId));
+          console.error('Session processing error:', data.error);
+        }
+        
+      } catch (e) {
+        console.error('Failed to parse dashboard WebSocket message:', e);
+      }
+    };
+    
+    ws.onclose = () => {
+      console.log('Dashboard WebSocket closed');
+      setDashboardConnected(false);
+      dashboardWsRef.current = null;
+      // Auto-reconnect after 3 seconds
+      setTimeout(connectDashboardWS, 3000);
+    };
+    
+    ws.onerror = (error) => {
+      console.error('Dashboard WebSocket error:', error);
+    };
+    
+    dashboardWsRef.current = ws;
+  }, []);
 
   useEffect(() => {
     loadSessions();
-    // Refresh sessions every 30 seconds
-    const interval = setInterval(loadSessions, 30000);
-    return () => clearInterval(interval);
+    loadSummaries();
+    loadDiagrams();
+    loadReels();
+    connectDashboardWS();
+    
+    // Refresh sessions more frequently to catch new recordings
+    const sessionInterval = setInterval(loadSessions, 5000);
+    const memoryInterval = setInterval(() => {
+      loadSummaries();
+      loadDiagrams();
+      loadReels();
+    }, 5000);
+    
+    return () => {
+      clearInterval(sessionInterval);
+      clearInterval(memoryInterval);
+      if (avatarWsRef.current) {
+        avatarWsRef.current.close();
+      }
+      if (dashboardWsRef.current) {
+        dashboardWsRef.current.close();
+      }
+    };
+  }, [connectDashboardWS]);
+
+  // WebSocket connection for live avatar updates
+  const connectAvatarWS = useCallback(() => {
+    if (avatarWsRef.current?.readyState === WebSocket.OPEN) return;
+
+    const ws = new WebSocket(`${WS_URL}/ws/puppeteer`);
+    
+    ws.onopen = () => {
+      console.log('Avatar WebSocket connected');
+      setIsAvatarLive(true);
+    };
+    
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'pose') {
+          setAvatarPose(data);
+          setMotionContext(data.context || null);
+          setPoseHistory(prev => [...prev.slice(-19), { ...data, timestamp: Date.now() }]);
+        } else if (data.type === 'motion') {
+          setMotionContext(data.context || null);
+        }
+      } catch (e) {
+        console.error('Failed to parse WebSocket message:', e);
+      }
+    };
+    
+    ws.onclose = () => {
+      console.log('Avatar WebSocket closed');
+      setIsAvatarLive(false);
+      avatarWsRef.current = null;
+    };
+    
+    ws.onerror = (error) => {
+      console.error('Avatar WebSocket error:', error);
+    };
+    
+    avatarWsRef.current = ws;
+  }, []);
+
+  const disconnectAvatarWS = useCallback(() => {
+    if (avatarWsRef.current) {
+      avatarWsRef.current.close();
+      avatarWsRef.current = null;
+    }
+    setIsAvatarLive(false);
+  }, []);
+
+  const loadPresetPose = useCallback(async (poseName) => {
+    try {
+      const response = await fetch(`${ADK_API_URL}/pose`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pose_name: poseName }),
+      });
+      const data = await response.json();
+      if (!data.error) {
+        setAvatarPose(data);
+      }
+    } catch (error) {
+      console.error('Error loading preset pose:', error);
+    }
   }, []);
 
   const loadSessions = async () => {
     try {
       setLoading(true);
-      const queryParams = new URLSearchParams();
-      if (filter === 'today') {
-        queryParams.append('filter', 'today');
-      }
-      if (searchQuery) {
-        queryParams.append('search', searchQuery);
-      }
-
-      const url = `${API_URL}/sessions${queryParams.toString() ? '?' + queryParams : ''}`;
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json'
-        }
-      });
+      
+      // Fetch from /summaries and transform data to match SessionCard format
+      const response = await fetch(`${ADK_API_URL}/summaries?limit=50`);
 
       if (!response.ok) {
-        throw new Error(`Failed to fetch sessions: ${response.status}`);
+        throw new Error(`Failed to fetch summaries: ${response.status}`);
       }
 
       const result = await response.json();
-      if (result.success && result.sessions) {
-        setSessions(result.sessions);
-      } else {
-        setSessions([]);
-      }
+      const items = result.items || [];
+      
+      // Transform summary data to session card format
+      const transformedSessions = items.map((item, index) => {
+        const payload = item.payload || {};
+        const resultData = item.result || {};
+        
+        // Map tasks to action_items format expected by SessionCard
+        const actionItems = (resultData.tasks || []).map(task => ({
+          task: task.action || task.task || task,
+          priority: task.priority || 'Medium'
+        }));
+        
+        // Extract date from MongoDB ObjectId or use provided date
+        let createdAt = new Date().toISOString();
+        if (item._id) {
+          // Try to get date from ObjectId generation_time
+          if (typeof item._id === 'object' && item._id.generation_time) {
+            createdAt = new Date(item._id.generation_time * 1000).toISOString();
+          } else if (item._id.$date) {
+            createdAt = typeof item._id.$date === 'string' ? item._id.$date : new Date(item._id.$date).toISOString();
+          } else if (typeof item._id === 'string') {
+            // Extract timestamp from ObjectId string (first 8 hex chars = seconds since epoch)
+            try {
+              const timestamp = parseInt(item._id.substring(0, 8), 16) * 1000;
+              createdAt = new Date(timestamp).toISOString();
+            } catch (e) {
+              // Fallback to current time
+            }
+          }
+        }
+        
+        // Get duration from payload if available (for recorded sessions)
+        const duration = payload.duration_seconds || payload.duration || 0;
+        
+        return {
+          sessionId: item._id?.$oid || item._id || `summary-${index}`,
+          title: payload.title || 'Untitled Summary',
+          source_url: payload.source_url || '',
+          transcript: payload.text || '',
+          duration_seconds: duration,
+          created_at: createdAt,
+          summary: {
+            tldr: resultData.summary_tldr || 'No summary available',
+            key_points: resultData.key_points || [],
+            action_items: actionItems,
+            sentiment: resultData.sentiment || 'Neutral', // Use actual sentiment from Gemini
+            topic: resultData.topic || ''
+          }
+        };
+      });
+      
+      setSessions(transformedSessions);
     } catch (error) {
       console.error('Error loading sessions:', error);
       setSessions([]);
@@ -59,24 +295,147 @@ function App() {
     loadSessions();
   }, [filter, searchQuery]);
 
-  const handleRecordNew = () => {
-    // Open extension or new tab
-    window.open('chrome://extensions/', '_blank');
+  const loadSummaries = async () => {
+    try {
+      const response = await fetch(`${ADK_API_URL}/summaries?limit=20`);
+      const result = await response.json();
+      setSummaries(result.items || []);
+    } catch (error) {
+      console.error('Error loading summaries:', error);
+      setSummaries([]);
+    }
   };
 
-  const filteredSessions = sessions.filter(session => {
-    // Additional client-side filtering if needed
+  const loadDiagrams = async () => {
+    try {
+      const response = await fetch(`${ADK_API_URL}/diagrams?limit=20`);
+      const result = await response.json();
+      setDiagrams(result.items || []);
+    } catch (error) {
+      console.error('Error loading diagrams:', error);
+      setDiagrams([]);
+    }
+  };
+
+  const loadReels = async () => {
+    try {
+      const response = await fetch(`${ADK_API_URL}/reels?limit=50`);
+      const result = await response.json();
+      setReels(result.reels || []);
+    } catch (error) {
+      console.error('Error loading reels:', error);
+      setReels([]);
+    }
+  };
+
+  const handleRecordNew = () => {
+    // Open instructions for using the extension
+    alert('Use the cue extension on any webpage to record a session.\n\nClick "Start Session" in the floating halo strip.');
+  };
+
+  const handleDeleteSession = async (sessionId) => {
+    if (!sessionId) return;
+
+    try {
+      // Try to delete from backend
+      const response = await fetch(`${ADK_API_URL}/sessions/${sessionId}`, {
+        method: 'DELETE',
+      });
+
+      if (response.ok) {
+        // Remove from local state
+        setSessions(prev => prev.filter(s => s.sessionId !== sessionId && s._id !== sessionId));
+        setLiveSessions(prev => prev.filter(s => s.sessionId !== sessionId));
+        console.log('[cue] Session deleted:', sessionId);
+      } else {
+        console.error('[cue] Failed to delete session:', response.statusText);
+      }
+    } catch (error) {
+      console.error('[cue] Error deleting session:', error);
+      // Still remove from local state for better UX
+      setSessions(prev => prev.filter(s => s.sessionId !== sessionId && s._id !== sessionId));
+      setLiveSessions(prev => prev.filter(s => s.sessionId !== sessionId));
+    }
+  };
+
+  // Transform reels to session format for library display
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/d175bd2d-d0e3-45e2-bafc-edc26c33de53',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.js:339',message:'Computing reelsAsSessions',data:{reelsType:typeof reels,reelsIsArray:Array.isArray(reels),reelsLength:reels?.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+  // #endregion
+  const reelsAsSessions = (reels || []).map((reel, index) => ({
+    sessionId: reel.id || `reel-${index}`,
+    title: reel.title || 'Untitled Reel',
+    source_url: reel.source_url || '',
+    transcript: '',
+    duration_seconds: 0,
+    created_at: reel.created_at || new Date().toISOString(),
+    isReel: true, // Mark as reel for potential styling
+    summary: {
+      tldr: reel.summary || 'No summary available',
+      key_points: [],
+      action_items: (reel.tasks || []).map(task => ({
+        task: task.action || task.task || task,
+        priority: task.priority || 'Medium'
+      })),
+      sentiment: reel.sentiment || 'Neutral',
+      topic: reel.type || ''
+    },
+    mermaid_code: reel.mermaid_code,
+    videoUrl: reel.videoUrl
+  }));
+
+  // Combine live sessions (from WebSocket), fetched sessions (from DB/API), and reels
+  // Use a Set to deduplicate by sessionId/id
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/d175bd2d-d0e3-45e2-bafc-edc26c33de53',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.js:362',message:'Starting sessionMap merge',data:{liveSessionsCount:liveSessions.length,sessionsCount:sessions.length,reelsAsSessionsCount:reelsAsSessions.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+  // #endregion
+  const sessionMap = new Map();
+
+  // Add live sessions first (highest priority)
+  liveSessions.forEach(s => {
+    // #region agent log
+    const sessionId = s.sessionId || s._id;
+    fetch('http://127.0.0.1:7242/ingest/d175bd2d-d0e3-45e2-bafc-edc26c33de53',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.js:367',message:'Adding live session to map',data:{hasSessionId:!!s.sessionId,has_id:!!s._id,sessionId:sessionId,title:s.title},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
+    const id = s.sessionId || s._id;
+    if (id) sessionMap.set(id, s);
+  });
+
+  // Add regular sessions
+  sessions.forEach(s => {
+    // #region agent log
+    const sessionId = s.sessionId || s._id;
+    fetch('http://127.0.0.1:7242/ingest/d175bd2d-d0e3-45e2-bafc-edc26c33de53',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.js:370',message:'Adding regular session to map',data:{hasSessionId:!!s.sessionId,has_id:!!s._id,sessionId:sessionId,title:s.title,mapHasId:sessionMap.has(sessionId)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
+    const id = s.sessionId || s._id;
+    if (id && !sessionMap.has(id)) {
+      sessionMap.set(id, s);
+    }
+  });
+
+  // Add reels (only if not already present)
+  reelsAsSessions.forEach(s => {
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/d175bd2d-d0e3-45e2-bafc-edc26c33de53',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.js:377',message:'Adding reel session to map',data:{sessionId:s.sessionId,title:s.title,mapHasId:sessionMap.has(s.sessionId)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
+    if (s.sessionId && !sessionMap.has(s.sessionId)) {
+      sessionMap.set(s.sessionId, s);
+    }
+  });
+
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/d175bd2d-d0e3-45e2-bafc-edc26c33de53',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.js:383',message:'SessionMap merge complete',data:{finalMapSize:sessionMap.size},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+  // #endregion
+  const allSessions = Array.from(sessionMap.values());
+
+  const filteredSessions = allSessions.filter(session => {
     if (searchQuery) {
       const query = searchQuery.toLowerCase();
       const matchesTitle = session.title?.toLowerCase().includes(query);
-      const matchesSummary = Array.isArray(session.summary?.summary) 
-        ? session.summary.summary.some(s => s.toLowerCase().includes(query))
-        : (session.summary?.summary || '').toLowerCase().includes(query);
-      const matchesTopics = Array.isArray(session.summary?.keyTopics)
-        ? session.summary.keyTopics.some(t => t.toLowerCase().includes(query))
-        : false;
+      const matchesSummary = session.summary?.tldr?.toLowerCase().includes(query);
+      const matchesTranscript = session.transcript?.toLowerCase().includes(query);
       
-      if (!matchesTitle && !matchesSummary && !matchesTopics) {
+      if (!matchesTitle && !matchesSummary && !matchesTranscript) {
         return false;
       }
     }
@@ -86,14 +445,31 @@ function App() {
   const formatDate = (timestamp) => {
     if (!timestamp) return 'Unknown date';
     
-    const date = new Date(timestamp);
+    // Handle both number (milliseconds) and string (ISO) formats
+    const date = typeof timestamp === 'number' ? new Date(timestamp) : new Date(timestamp);
+    
+    // Check if date is valid
+    if (isNaN(date.getTime())) {
+      return 'Unknown date';
+    }
+    
     const now = new Date();
     const diffMs = now - date;
+    
+    // If date is in the future (likely parsing error), show relative to now
+    if (diffMs < 0) {
+      return 'Just now';
+    }
+    
     const diffMins = Math.floor(diffMs / 60000);
     const diffHours = Math.floor(diffMs / 3600000);
     const diffDays = Math.floor(diffMs / 86400000);
+    const diffWeeks = Math.floor(diffDays / 7);
+    const diffMonths = Math.floor(diffDays / 30);
 
-    if (diffMins < 60) {
+    if (diffMins < 1) {
+      return 'Just now';
+    } else if (diffMins < 60) {
       return `${diffMins}m ago`;
     } else if (diffHours < 24) {
       return `${diffHours}h ago`;
@@ -101,8 +477,12 @@ function App() {
       return 'Yesterday';
     } else if (diffDays < 7) {
       return `${diffDays}d ago`;
+    } else if (diffWeeks < 4) {
+      return `${diffWeeks}w ago`;
+    } else if (diffMonths < 12) {
+      return `${diffMonths}mo ago`;
     } else {
-      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
     }
   };
 
@@ -115,8 +495,28 @@ function App() {
 
   return (
     <div className="library-app">
+      {/* Dashboard Halo Strip - Top Bar */}
+      <DashboardHalo />
+      
       {/* Sidebar */}
       <div className="library-sidebar">
+        <div className="sidebar-brand">
+          <div className="sidebar-logo">
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <circle cx="12" cy="12" r="10" fill="url(#logoGradSidebar)" />
+              <path d="M8 12C8 9.79 9.79 8 12 8C14.21 8 16 9.79 16 12" stroke="white" strokeWidth="2" strokeLinecap="round"/>
+              <circle cx="12" cy="14" r="2" fill="white"/>
+              <defs>
+                <linearGradient id="logoGradSidebar" x1="2" y1="2" x2="22" y2="22">
+                  <stop stopColor="#6366f1"/>
+                  <stop offset="1" stopColor="#8b5cf6"/>
+                </linearGradient>
+              </defs>
+            </svg>
+          </div>
+          <span className="sidebar-brand-text">cue</span>
+        </div>
+        
         <div className="sidebar-nav">
           <button 
             className={`nav-item ${activeNav === 'library' ? 'active' : ''}`}
@@ -129,25 +529,29 @@ function App() {
               <rect x="14" y="14" width="7" height="7"/>
               <rect x="3" y="14" width="7" height="7"/>
             </svg>
+            <span>Library</span>
           </button>
           <button 
-            className={`nav-item ${activeNav === 'history' ? 'active' : ''}`}
-            onClick={() => setActiveNav('history')}
-            title="History"
+            className={`nav-item ${activeNav === 'avatar' ? 'active' : ''}`}
+            onClick={() => setActiveNav('avatar')}
+            title="Avatar Preview"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <circle cx="12" cy="12" r="10"/>
-              <polyline points="12 6 12 12 16 14"/>
+              <circle cx="12" cy="7" r="4"/>
+              <path d="M5 21v-2a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4v2"/>
             </svg>
+            <span>Avatar</span>
           </button>
           <button 
-            className={`nav-item ${activeNav === 'ai' ? 'active' : ''}`}
-            onClick={() => setActiveNav('ai')}
-            title="AI Assistant"
+            className={`nav-item ${activeNav === 'reels' ? 'active' : ''}`}
+            onClick={() => setActiveNav('reels')}
+            title="Reels"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+              <rect x="2" y="3" width="20" height="18" rx="2"/>
+              <path d="M8 21V3M16 21V3M2 12h20"/>
             </svg>
+            <span>Reels</span>
           </button>
           <button 
             className={`nav-item ${activeNav === 'settings' ? 'active' : ''}`}
@@ -158,6 +562,7 @@ function App() {
               <circle cx="12" cy="12" r="3"/>
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
             </svg>
+            <span>Settings</span>
           </button>
         </div>
         <button className="nav-item record-btn" onClick={handleRecordNew} title="Record New Session">
@@ -165,6 +570,7 @@ function App() {
             <circle cx="12" cy="12" r="10"/>
             <circle cx="12" cy="12" r="6" fill="white"/>
           </svg>
+          <span>New Session</span>
         </button>
       </div>
 
@@ -172,105 +578,239 @@ function App() {
       <div className="library-main">
         {/* Header */}
         <header className="library-header">
-          <h1 className="library-title">cue Session Library</h1>
+          <h1 className="library-title">
+            {activeNav === 'library' && 'Session Library'}
+            {activeNav === 'avatar' && 'Avatar Preview'}
+            {activeNav === 'reels' && 'Reels Feed'}
+            {activeNav === 'settings' && 'Settings'}
+          </h1>
           <div className="header-actions">
-            <button 
-              className={`filter-btn ${filter === 'today' ? 'active' : ''}`}
-              onClick={() => setFilter('today')}
-            >
-              Today
-            </button>
-            <button 
-              className={`filter-btn ${filter === 'history' ? 'active' : ''}`}
-              onClick={() => setFilter('history')}
-            >
-              History
-            </button>
-            <button className="icon-btn" title="Search">
+            <div className="search-box">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <circle cx="11" cy="11" r="8"/>
                 <path d="m21 21-4.35-4.35"/>
               </svg>
-            </button>
-            <button className="icon-btn" title="Dark Mode">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
-              </svg>
-            </button>
-            <button className="text-btn">
-              Export Data
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
-                <polyline points="15 3 21 3 21 9"/>
-                <line x1="10" y1="14" x2="21" y2="3"/>
-              </svg>
-            </button>
+              <input
+                type="text"
+                placeholder="Search sessions..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+              />
+            </div>
+            {dashboardConnected && (
+              <div className="connection-indicator connected" title="Connected to server">
+                <span className="connection-dot"></span>
+              </div>
+            )}
           </div>
         </header>
 
-        {/* Search Bar */}
-        <div className="search-container">
-          <input
-            type="text"
-            className="search-input"
-            placeholder="Search sessions..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-          />
-        </div>
-
-        {/* Sessions Grid */}
-        <div className="sessions-container">
-          <h2 className="sections-title">Past Digital Sessions</h2>
-          
-          {loading ? (
-            <div className="loading-state">
-              <div className="spinner"></div>
-              <p>Loading sessions...</p>
-            </div>
-          ) : (
-            <div className="sessions-grid">
-              {/* Record New Session Card */}
-              <div className="session-card new-session-card" onClick={handleRecordNew}>
-                <div className="new-session-icon">+</div>
-                <div className="new-session-text">Record New Session</div>
-              </div>
-
-              {/* Session Cards */}
-              {filteredSessions.map((session, index) => (
-                <SessionCard
-                  key={session.sessionId || session._id || index}
-                  session={session}
-                  formatDate={formatDate}
-                  formatDuration={formatDuration}
+        {/* Avatar Preview Panel */}
+        {activeNav === 'avatar' && (
+          <div className="sessions-container avatar-container">
+            <div className="avatar-panel">
+              <div className="avatar-main">
+                <AvatarViewer 
+                  pose={avatarPose}
+                  isLive={isAvatarLive}
+                  motionContext={motionContext}
+                  height={500}
                 />
-              ))}
-
-              {filteredSessions.length === 0 && !loading && (
-                <div className="empty-state">
-                  <p>No sessions found</p>
-                  <button className="primary-btn" onClick={handleRecordNew}>
-                    Record Your First Session
+              </div>
+              <div className="avatar-controls">
+                <h3>Live Connection</h3>
+                <div className="control-group">
+                  {!isAvatarLive ? (
+                    <button className="primary-btn" onClick={connectAvatarWS}>
+                      Connect Live
+                    </button>
+                  ) : (
+                    <button className="secondary-btn" onClick={disconnectAvatarWS}>
+                      Disconnect
+                    </button>
+                  )}
+                </div>
+                
+                <h3>Preset Poses</h3>
+                <div className="pose-buttons">
+                  <button className="pose-btn" onClick={() => loadPresetPose('t_pose')}>
+                    T-Pose
+                  </button>
+                  <button className="pose-btn" onClick={() => loadPresetPose('arms_up')}>
+                    Arms Up
+                  </button>
+                  <button className="pose-btn" onClick={() => loadPresetPose('squat')}>
+                    Squat
                   </button>
                 </div>
-              )}
+                
+                <h3>Recent Poses</h3>
+                <div className="pose-history">
+                  {poseHistory.length === 0 ? (
+                    <p className="empty-history">No poses yet. Connect live or try a preset.</p>
+                  ) : (
+                    poseHistory.slice(-5).reverse().map((pose, idx) => (
+                      <div 
+                        key={idx} 
+                        className="pose-history-item"
+                        onClick={() => setAvatarPose(pose)}
+                      >
+                        <span className="pose-time">
+                          {new Date(pose.timestamp).toLocaleTimeString()}
+                        </span>
+                        <span className="pose-context">{pose.context || 'general'}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
             </div>
-          )}
-        </div>
+          </div>
+        )}
+
+        {activeNav === 'reels' && (
+          <div className="sessions-container reels-container-wrapper">
+            <ReelsFeed reels={reels} />
+          </div>
+        )}
+        
+        {activeNav === 'library' && (
+          <>
+            {selectedSession ? (
+              <SessionDetail
+                session={selectedSession}
+                onBack={() => setSelectedSession(null)}
+                formatDate={formatDate}
+                formatDuration={formatDuration}
+              />
+            ) : (
+              /* Sessions Grid */
+              <div className="sessions-container">
+                <div className="section-header">
+                  <h2 className="sections-title">Past Digital Sessions</h2>
+                  <span className="session-count">
+                    {filteredSessions.length + processingSessions.length} sessions
+                  </span>
+                </div>
+                
+                {loading && processingSessions.length === 0 && filteredSessions.length === 0 ? (
+                  <div className="loading-state">
+                    <div className="spinner"></div>
+                    <p>Loading sessions...</p>
+                  </div>
+                ) : (
+                  <div className="sessions-grid">
+                    {/* Processing Sessions (at the top) */}
+                    {processingSessions.map((session) => (
+                      <ProcessingSessionCard
+                        key={session.id}
+                        session={session}
+                        formatDuration={formatDuration}
+                      />
+                    ))}
+
+                    {/* Completed Session Cards */}
+                    {filteredSessions.map((session, index) => (
+                      <SessionCard
+                        key={session.sessionId || session._id || index}
+                        session={session}
+                        formatDate={formatDate}
+                        formatDuration={formatDuration}
+                        onClick={setSelectedSession}
+                        onDelete={handleDeleteSession}
+                      />
+                    ))}
+
+                  {/* New Session Card */}
+                  <div className="session-card new-session-card" onClick={handleRecordNew}>
+                    <div className="new-session-icon">+</div>
+                    <div className="new-session-text">Record New Session</div>
+                  </div>
+
+                  {filteredSessions.length === 0 && processingSessions.length === 0 && !loading && (
+                    <div className="empty-state">
+                      <div className="empty-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                          <circle cx="12" cy="12" r="10"/>
+                          <path d="M8 12h8M12 8v8"/>
+                        </svg>
+                      </div>
+                      <h3>No Sessions Yet</h3>
+                      <p>Use the cue extension to record your first session</p>
+                      <button className="primary-btn" onClick={handleRecordNew}>
+                        How to Record
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+              </div>
+            )}
+
+            {!selectedSession && (
+              <div className="sessions-container">
+                <div className="section-header">
+                  <h2 className="sections-title">Memory Bank</h2>
+                </div>
+              <div className="memory-grid">
+                <div className="memory-section">
+                  <h3>Live Diagrams</h3>
+                  {diagrams.length === 0 ? (
+                    <p className="empty-memory">No diagrams captured yet</p>
+                  ) : (
+                    diagrams.map((diagram, idx) => (
+                      <AudioSessionCard key={diagram._id || idx} session={diagram} />
+                    ))
+                  )}
+                </div>
+                <div className="memory-section">
+                  <h3>Prism Summaries</h3>
+                  {summaries.length === 0 ? (
+                    <p className="empty-memory">No summaries generated yet</p>
+                  ) : (
+                    summaries.map((summary, idx) => (
+                      <PrismTaskCard key={summary._id || idx} summary={summary} />
+                    ))
+                  )}
+                </div>
+              </div>
+              </div>
+            )}
+          </>
+        )}
+
+        {activeNav === 'settings' && (
+          <div className="sessions-container settings-container">
+            <div className="settings-section">
+              <h3>API Configuration</h3>
+              <p className="settings-info">Backend URL: {ADK_API_URL}</p>
+              <p className="settings-info">
+                WebSocket Status: {dashboardConnected ? '✓ Connected' : '○ Disconnected'}
+              </p>
+            </div>
+            <div className="settings-section">
+              <h3>About cue</h3>
+              <p className="settings-info">
+                cue is an intelligent session recording and analysis tool powered by Gemini AI.
+                Record any web content, get automatic transcriptions, and AI-generated summaries.
+              </p>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* AI Processing Toast */}
-      <div className="ai-toast hidden" id="ai-toast">
-        <div className="toast-icon">✨</div>
-        <div className="toast-content">
-          <div className="toast-title">AI is organizing sessions</div>
-          <div className="toast-subtitle" id="toast-subtitle">Processing...</div>
+      {processingSessions.length > 0 && (
+        <div className="ai-toast">
+          <div className="toast-icon">✨</div>
+          <div className="toast-content">
+            <div className="toast-title">AI is organizing {processingSessions.length} new session{processingSessions.length > 1 ? 's' : ''}</div>
+            <div className="toast-subtitle">
+              Processing audio for '{processingSessions[0]?.title || 'Session'}'
+            </div>
+          </div>
         </div>
-        <button className="toast-close" onClick={() => {
-          const toast = document.getElementById('ai-toast');
-          if (toast) toast.classList.add('hidden');
-        }}>×</button>
-      </div>
+      )}
     </div>
   );
 }

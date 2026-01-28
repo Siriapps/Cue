@@ -1,0 +1,514 @@
+/* cue Halo Strip - Full Width Top Bar */
+.halo-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(248,249,252,0.98) 100%);
+  padding: 8px 24px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  position: relative;
+  width: 100%;
+  height: 48px;
+  box-sizing: border-box;
+}
+
+/* Centered Content Container */
+.halo-content-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex: 1;
+  margin: 0 auto;
+}
+
+/* Collapsed State - Icon only on right side of top bar */
+.halo-collapsed {
+  position: absolute;
+  top: 6px;
+  right: 16px;
+  z-index: 2147483647;
+  cursor: pointer;
+  transition: transform 0.2s ease;
+}
+
+.halo-collapsed:hover {
+  transform: scale(1.1);
+}
+
+.halo-collapsed-icon {
+  width: 36px;
+  height: 36px;
+  background: white;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  position: relative;
+}
+
+.halo-collapsed-icon svg {
+  width: 24px;
+  height: 24px;
+}
+
+.recording-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 10px;
+  height: 10px;
+  background: #ef4444;
+  border-radius: 50%;
+  border: 2px solid white;
+  animation: pulse-badge 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-badge {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.2); }
+}
+
+/* Collapse Button - Right Side */
+.halo-collapse-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: #9ca3af;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  flex-shrink: 0;
+  position: absolute;
+  right: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.halo-collapse-btn:hover {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+
+/* Brand Section */
+.halo-brand {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 10px;
+  border-right: 1px solid rgba(0, 0, 0, 0.08);
+  margin-right: 4px;
+}
+
+.halo-logo {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+}
+
+.halo-logo svg {
+  width: 100%;
+  height: 100%;
+}
+
+.halo-brand-text {
+  font-weight: 700;
+  font-size: 15px;
+  color: #1a1a2e;
+  letter-spacing: -0.3px;
+}
+
+/* Session Controls */
+.halo-session-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.session-timer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: #fef2f2;
+  border-radius: 8px;
+  font-family: 'SF Mono', 'Consolas', monospace;
+}
+
+.recording-dot {
+  width: 8px;
+  height: 8px;
+  background: #d1d5db;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.recording-dot.active {
+  background: #ef4444;
+  animation: recording-blink 1s ease-in-out infinite;
+}
+
+@keyframes recording-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.timer-text {
+  font-size: 13px;
+  font-weight: 600;
+  color: #991b1b;
+  min-width: 42px;
+}
+
+/* Divider */
+.halo-divider {
+  width: 1px;
+  height: 24px;
+  background: rgba(0, 0, 0, 0.08);
+  margin: 0 4px;
+}
+
+/* Base Button Styles */
+.halo-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 14px;
+  border-radius: 8px;
+  border: none;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.halo-btn svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+/* Start Session Button - Green */
+.halo-btn.start-session {
+  background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+  color: white;
+  box-shadow: 0 2px 6px rgba(34, 197, 94, 0.25);
+}
+
+.halo-btn.start-session:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 3px 10px rgba(34, 197, 94, 0.35);
+}
+
+/* Pause Button - Yellow/Orange */
+.halo-btn.pause-btn {
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+  color: white;
+  padding: 7px 10px;
+  box-shadow: 0 2px 6px rgba(245, 158, 11, 0.25);
+}
+
+.halo-btn.pause-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 3px 10px rgba(245, 158, 11, 0.35);
+}
+
+/* Resume Button - Green */
+.halo-btn.resume-btn {
+  background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+  color: white;
+  padding: 7px 10px;
+  box-shadow: 0 2px 6px rgba(34, 197, 94, 0.25);
+}
+
+.halo-btn.resume-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 3px 10px rgba(34, 197, 94, 0.35);
+}
+
+/* Stop Button - Red */
+.halo-btn.stop-btn {
+  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+  color: white;
+  box-shadow: 0 2px 6px rgba(239, 68, 68, 0.25);
+}
+
+.halo-btn.stop-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 3px 10px rgba(239, 68, 68, 0.35);
+}
+
+/* Go Live Button - Red */
+.halo-btn.go-live {
+  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+  color: white;
+  box-shadow: 0 2px 6px rgba(239, 68, 68, 0.25);
+}
+
+.halo-btn.go-live:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 3px 10px rgba(239, 68, 68, 0.35);
+}
+
+.halo-btn.go-live.active {
+  animation: live-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes live-pulse {
+  0%, 100% { box-shadow: 0 2px 6px rgba(239, 68, 68, 0.25); }
+  50% { box-shadow: 0 3px 16px rgba(239, 68, 68, 0.5); }
+}
+
+.live-indicator {
+  width: 6px;
+  height: 6px;
+  background: white;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.halo-btn.go-live.active .live-indicator {
+  animation: blink 1s ease-in-out infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* Ask AI Button - Purple */
+.halo-btn.ask-ai {
+  background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
+  color: white;
+  box-shadow: 0 2px 6px rgba(139, 92, 246, 0.25);
+}
+
+.halo-btn.ask-ai:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 3px 10px rgba(139, 92, 246, 0.35);
+}
+
+/* Library Button - Purple */
+.halo-btn.library {
+  background: linear-gradient(135deg, #a855f7 0%, #9333ea 100%);
+  color: white;
+  box-shadow: 0 2px 6px rgba(168, 85, 247, 0.25);
+}
+
+.halo-btn.library:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 3px 10px rgba(168, 85, 247, 0.35);
+}
+
+/* Chat Panel */
+.halo-chat {
+  position: fixed;
+  top: 56px;
+  right: 24px;
+  width: 360px;
+  background: white;
+  border-radius: 12px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  animation: slide-down 0.2s ease-out;
+  z-index: 2147483646;
+}
+
+@keyframes slide-down {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.halo-chat-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1a1a2e;
+}
+
+.halo-close {
+  background: none;
+  border: none;
+  font-size: 18px;
+  color: #9ca3af;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+  transition: color 0.2s;
+}
+
+.halo-close:hover {
+  color: #374151;
+}
+
+.halo-input {
+  background: #f8f9fc;
+  border: 1px solid #e5e7eb;
+  color: #1a1a2e;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  outline: none;
+  transition: all 0.2s;
+}
+
+.halo-input:focus {
+  border-color: #8b5cf6;
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.1);
+}
+
+.halo-input::placeholder {
+  color: #9ca3af;
+}
+
+.halo-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.halo-btn.send-btn {
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  color: white;
+  padding: 8px 18px;
+  font-size: 12px;
+  box-shadow: 0 2px 6px rgba(99, 102, 241, 0.25);
+}
+
+.halo-btn.send-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 3px 10px rgba(99, 102, 241, 0.35);
+}
+
+/* Answer Display */
+.halo-answer {
+  padding: 10px;
+  background: #f8f9fc;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+}
+
+.halo-thinking {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #6b7280;
+  font-style: italic;
+}
+
+.thinking-dot {
+  width: 5px;
+  height: 5px;
+  background: #8b5cf6;
+  border-radius: 50%;
+  animation: thinking-bounce 1.4s infinite ease-in-out both;
+}
+
+.thinking-dot:nth-child(1) { animation-delay: -0.32s; }
+.thinking-dot:nth-child(2) { animation-delay: -0.16s; }
+.thinking-dot:nth-child(3) { animation-delay: 0s; }
+
+@keyframes thinking-bounce {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.5; }
+  40% { transform: scale(1); opacity: 1; }
+}
+
+.halo-answer-text {
+  font-size: 13px;
+  color: #374151;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+/* Dark Mode Support */
+@media (prefers-color-scheme: dark) {
+  .halo-strip {
+    background: linear-gradient(180deg, rgba(26,26,46,0.98) 0%, rgba(15,17,23,0.98) 100%);
+    border-bottom-color: rgba(255, 255, 255, 0.08);
+  }
+
+  .halo-collapsed-icon {
+    background: #1a1a2e;
+    border-color: rgba(255, 255, 255, 0.1);
+  }
+
+  .halo-brand {
+    border-right-color: rgba(255, 255, 255, 0.08);
+  }
+
+  .halo-brand-text {
+    color: #f9fafb;
+  }
+
+  .halo-collapse-btn {
+    color: #6b7280;
+  }
+
+  .halo-collapse-btn:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: #9ca3af;
+  }
+
+  .halo-divider {
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  .session-timer {
+    background: rgba(239, 68, 68, 0.1);
+  }
+
+  .timer-text {
+    color: #fca5a5;
+  }
+
+  .halo-chat {
+    background: #1a1a2e;
+    border-color: rgba(255, 255, 255, 0.08);
+  }
+
+  .halo-chat-header {
+    color: #f9fafb;
+  }
+
+  .halo-input {
+    background: #0f1117;
+    border-color: rgba(255, 255, 255, 0.08);
+    color: #f9fafb;
+  }
+
+  .halo-input::placeholder {
+    color: #6b7280;
+  }
+
+  .halo-answer {
+    background: #0f1117;
+    border-color: rgba(255, 255, 255, 0.08);
+  }
+
+  .halo-answer-text {
+    color: #e5e7eb;
+  }
+}

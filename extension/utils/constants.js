@@ -1,14 +1,16 @@
-// API Configuration
-// Replace these with your actual API keys
+// API Configuration (use Vite env vars; do not hardcode keys)
 export const CONFIG = {
   // Gemini API
-  GEMINI_API_KEY: 'AIzaSyD3K05kJPBidKy1418CJcE6pQW0ZHSmgQI',
-  // Using gemini-1.5-flash for better compatibility and audio support
-  GEMINI_API_URL: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash',
+  GEMINI_API_KEY: import.meta.env.VITE_GEMINI_API_KEY || '',
+  GEMINI_API_URL:
+    import.meta.env.VITE_GEMINI_API_URL ||
+    'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash',
   
   // Veo 3 API
-  VEO_API_KEY: 'AIzaSyD3K05kJPBidKy1418CJcE6pQW0ZHSmgQI',
-  VEO_API_URL: 'https://generativelanguage.googleapis.com/v1beta/models/veo-3.0-generate-001',
+  VEO_API_KEY: import.meta.env.VITE_VEO_API_KEY || '',
+  VEO_API_URL:
+    import.meta.env.VITE_VEO_API_URL ||
+    'https://generativelanguage.googleapis.com/v1beta/models/veo-3.0-generate-001',
   
   // Processing states
   STATES: {
