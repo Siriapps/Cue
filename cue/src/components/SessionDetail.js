@@ -6,6 +6,7 @@ function SessionDetail({ session, onBack, formatDate, formatDuration }) {
   const keyPoints = summary.key_points || [];
   const actionItems = summary.action_items || [];
   const transcript = session.transcript || 'No transcript available.';
+  const videoUrl = session.video_url || session.videoUrl || null;
 
   const openSource = () => {
     if (session.source_url) {
@@ -49,6 +50,23 @@ function SessionDetail({ session, onBack, formatDate, formatDuration }) {
 
       {/* Content */}
       <div className="detail-content">
+        {/* Video Summary Section */}
+        {videoUrl && (
+          <section className="detail-section video-section">
+            <h2 className="detail-section-title">Video Summary</h2>
+            <div className="detail-video-container">
+              <video
+                controls
+                src={videoUrl}
+                className="detail-video-player"
+                poster=""
+              >
+                Your browser does not support the video tag.
+              </video>
+            </div>
+          </section>
+        )}
+
         {/* Summary Section */}
         <section className="detail-section">
           <h2 className="detail-section-title">Summary</h2>

@@ -85,7 +85,47 @@ async function stopSessionRecording(payload: {
       }),
     });
 
-    const data = await response.json();
+    // Check if response is OK before parsing JSON
+    if (!response.ok) {
+      let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      try {
+        // Try to get error message from response body
+        const errorText = await response.text();
+        if (errorText) {
+          try {
+            const errorJson = JSON.parse(errorText);
+            errorMessage = errorJson.error || errorJson.detail || errorMessage;
+          } catch {
+            // If not JSON, use the text as error message
+            errorMessage = errorText.substring(0, 200); // Limit length
+          }
+        }
+      } catch (e) {
+        // If we can't read the error, use status text
+        console.error("[cue] Failed to read error response:", e);
+      }
+      
+      console.error("[cue] Backend error:", errorMessage);
+      sessionState = "idle";
+      sessionInfo = null;
+      return { success: false, error: errorMessage };
+    }
+
+    // Parse JSON response
+    let data;
+    try {
+      const responseText = await response.text();
+      if (!responseText) {
+        throw new Error("Empty response from server");
+      }
+      data = JSON.parse(responseText);
+    } catch (parseError: any) {
+      console.error("[cue] Failed to parse JSON response:", parseError);
+      console.error("[cue] Response text:", await response.text());
+      sessionState = "idle";
+      sessionInfo = null;
+      return { success: false, error: `Invalid JSON response: ${parseError.message}` };
+    }
 
     // Cleanup (only if we had session info)
     if (sessionInfo) {
@@ -94,9 +134,17 @@ async function stopSessionRecording(payload: {
     }
 
     // Notify content script
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tab?.id) {
-      chrome.tabs.sendMessage(tab.id, { type: "SESSION_SAVED", payload: data });
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (tab?.id) {
+        chrome.tabs.sendMessage(tab.id, { type: "SESSION_SAVED", payload: data }, (response) => {
+          if (chrome.runtime.lastError) {
+            console.warn("[cue] Failed to notify content script:", chrome.runtime.lastError.message);
+          }
+        });
+      }
+    } catch (messageError: any) {
+      console.warn("[cue] Failed to send message to content script:", messageError.message);
     }
 
     console.log("[cue] Session saved successfully:", data.sessionId);
@@ -105,7 +153,7 @@ async function stopSessionRecording(payload: {
     console.error("[cue] Failed to save session:", error);
     sessionState = "idle";
     sessionInfo = null;
-    return { success: false, error: error.message };
+    return { success: false, error: error.message || "Unknown error occurred" };
   }
 }
 
@@ -269,8 +317,14 @@ function stopGoLiveCapture() {
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   // Library
   if (message.type === "OPEN_LIBRARY") {
-    chrome.tabs.create({ url: message.url || "http://localhost:3001" });
-    return;
+    try {
+      chrome.tabs.create({ url: message.url || "http://localhost:3001" });
+      sendResponse({ success: true });
+    } catch (error: any) {
+      console.error("[cue] Failed to open library:", error);
+      sendResponse({ success: false, error: error.message });
+    }
+    return true; // Indicates we will send a response asynchronously
   }
 
   // Ask AI

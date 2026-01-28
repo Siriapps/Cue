@@ -5,8 +5,10 @@ from typing import Any, Dict, List, Optional, Set
 from datetime import datetime
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
 
 from app.agents.intent import analyze_intent
@@ -16,6 +18,7 @@ from app.agents.ask_ai import ask_ai
 from app.agents.motion import extract_motions, parse_motion_to_animation_hint
 from app.agents.puppeteer import generate_pose_for_motion, generate_pose_sequence, get_preset_pose
 from app.agents.transcriber import transcribe_audio, generate_session_summary
+from app.agents.veo_service import generate_video_from_summary
 from app.db.repository import (
     save_context_event,
     save_diagram_event,
@@ -23,6 +26,8 @@ from app.db.repository import (
     save_session,
     list_recent,
     list_sessions,
+    update_session,
+    get_session_by_id,
 )
 
 load_dotenv()
@@ -36,6 +41,38 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Global exception handler to ensure all errors return JSON
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Ensure all exceptions return JSON responses."""
+    import traceback
+    error_trace = traceback.format_exc()
+    print(f"[cue] Unhandled exception: {exc}")
+    print(f"[cue] Traceback: {error_trace}")
+    
+    return JSONResponse(
+        status_code=500,
+        content={
+            "success": False,
+            "error": str(exc),
+            "detail": "An internal server error occurred"
+        }
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Handle validation errors."""
+    return JSONResponse(
+        status_code=422,
+        content={
+            "success": False,
+            "error": "Validation error",
+            "detail": str(exc)
+        }
+    )
 
 
 # ================== DASHBOARD CONNECTION MANAGER ==================
@@ -290,10 +327,60 @@ async def save_session_endpoint(payload: SessionSaveRequest) -> Dict[str, Any]:
         await dashboard_manager.broadcast({
             "type": "SESSION_PROGRESS",
             "sessionId": session_id,
+            "progress": 70,
+            "step": "summarizing",
+        })
+
+        # Step 3: Generate video summary (70-95%)
+        video_url = None
+        
+        # Check if video already exists in MongoDB (by checking if a session with same title/source has video)
+        # Note: For new sessions, this won't match, but for retries it might
+        existing_video_url = None
+        try:
+            # Try to find existing session with same title and source_url that has a video
+            existing_sessions = list_sessions(limit=100)
+            for existing_session in existing_sessions:
+                if (existing_session.get("title") == payload.title and 
+                    existing_session.get("source_url") == payload.source_url and
+                    existing_session.get("video_url")):
+                    existing_video_url = existing_session.get("video_url")
+                    print(f"[cue] Found existing video for session '{payload.title}': {existing_video_url[:80]}...")
+                    break
+        except Exception as check_error:
+            print(f"[cue] Error checking for existing video (non-fatal): {check_error}")
+        
+        if existing_video_url:
+            video_url = existing_video_url
+            print(f"[cue] Using existing video URL, skipping generation")
+        else:
+            try:
+                await dashboard_manager.broadcast({
+                    "type": "SESSION_PROGRESS",
+                    "sessionId": session_id,
+                    "progress": 75,
+                    "step": "generating_video",
+                })
+
+                print(f"[cue] Generating video for session: {payload.title}")
+                video_url = await generate_video_from_summary(summary)
+
+                if video_url:
+                    print(f"[cue] Video generated: {video_url}")
+                else:
+                    print(f"[cue] No video URL returned (video generation may have failed)")
+
+            except Exception as video_error:
+                print(f"[cue] Video generation failed (non-fatal): {video_error}")
+                # Continue without video - not a fatal error
+
+        await dashboard_manager.broadcast({
+            "type": "SESSION_PROGRESS",
+            "sessionId": session_id,
             "progress": 100,
             "step": "complete",
         })
-        
+
         # Prepare session data
         session_data = {
             "title": payload.title,
@@ -301,22 +388,27 @@ async def save_session_endpoint(payload: SessionSaveRequest) -> Dict[str, Any]:
             "duration_seconds": payload.duration_seconds,
             "transcript": transcript,
             "summary": summary,
+            "video_url": video_url,
+            "has_video": video_url is not None,
             "created_at": datetime.utcnow(),
         }
 
         # Broadcast the full session result to dashboard FIRST (immediate display)
+        # Use temp UUID for immediate display, will be updated after MongoDB save
         broadcast_data = {
             "type": "SESSION_RESULT",
-            "sessionId": session_id,  # Use temp UUID for immediate display
+            "sessionId": session_id,  # Temp UUID for immediate display
             "title": payload.title,
             "source_url": payload.source_url,
             "duration_seconds": payload.duration_seconds,
             "transcript": transcript,
             "summary": summary,
+            "video_url": video_url,
+            "has_video": video_url is not None,
             "created_at": datetime.utcnow().isoformat(),
         }
         
-        print(f"[cue] Broadcasting SESSION_RESULT: sessionId={session_id}, title={payload.title}, has_summary={bool(summary)}, has_transcript={bool(transcript)}")
+        print(f"[cue] Broadcasting SESSION_RESULT: sessionId={session_id}, title={payload.title}, has_summary={bool(summary)}, has_transcript={bool(transcript)}, has_video={video_url is not None}")
         print(f"[cue] Active WebSocket connections: {len(dashboard_manager.active_connections)}")
         
         await dashboard_manager.broadcast(broadcast_data)
@@ -329,8 +421,19 @@ async def save_session_endpoint(payload: SessionSaveRequest) -> Dict[str, Any]:
             print(f"[cue] Saving session to MongoDB: {payload.title}")
             db_session_id = save_session(session_data)
             print(f"[cue] Session saved to MongoDB with ID: {db_session_id}")
+            
+            # If MongoDB ID is different from temp UUID, broadcast update
+            if db_session_id != session_id:
+                print(f"[cue] MongoDB ID differs from temp UUID, broadcasting update: {session_id} -> {db_session_id}")
+                await dashboard_manager.broadcast({
+                    "type": "SESSION_ID_UPDATE",
+                    "tempSessionId": session_id,
+                    "dbSessionId": db_session_id,
+                })
         except Exception as db_error:
             print(f"[cue] MongoDB save failed (session already displayed): {db_error}")
+            import traceback
+            traceback.print_exc()
 
         return {
             "success": True,
@@ -351,10 +454,15 @@ async def save_session_endpoint(payload: SessionSaveRequest) -> Dict[str, Any]:
             "error": str(e),
         })
         
-        return {
-            "success": False,
-            "error": str(e),
-        }
+        # Always return JSON, even on error
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": str(e),
+            }
+        )
 
 
 @app.get("/sessions")
@@ -386,69 +494,56 @@ async def delete_session_endpoint(session_id: str) -> Dict[str, Any]:
 
 @app.get("/reels")
 async def list_reels(limit: int = 50) -> Dict[str, Any]:
-    """Get reels combining sessions, summaries, and diagrams."""
-    summaries = list_recent("summaries", limit=limit)
-    diagrams = list_recent("diagrams", limit=limit)
-    sessions = list_sessions(limit=limit)
-    
+    """Get reels - only sessions with generated videos."""
+    from app.db.mongo import get_db
+
+    db = get_db()
+
+    # Query only sessions with videos
+    sessions_with_video = list(db.sessions.find(
+        {"has_video": True, "video_url": {"$ne": None}},
+        {
+            "_id": 1,
+            "title": 1,
+            "summary": 1,
+            "video_url": 1,
+            "source_url": 1,
+            "duration_seconds": 1,
+            "created_at": 1,
+            "transcript": 1,
+        }
+    ).sort("created_at", -1).limit(limit))
+
     reels = []
-    
-    # Add sessions as reels
-    for session in sessions:
+    for session in sessions_with_video:
         obj_id = session.get("_id")
-        timestamp = obj_id.generation_time.timestamp() * 1000 if obj_id and hasattr(obj_id, 'generation_time') else None
         summary = session.get("summary", {})
-        reels.append({
-            "id": str(obj_id) if obj_id else session.get("sessionId", ""),
-            "type": "session",
-            "title": session.get("title", "Recorded Session"),
-            "summary": summary.get("tldr", ""),
-            "key_points": summary.get("key_points", []),
-            "tasks": summary.get("action_items", []),
-            "transcript_preview": session.get("transcript", "")[:200] + "..." if session.get("transcript") else "",
-            "duration_seconds": session.get("duration_seconds", 0),
-            "source_url": session.get("source_url", ""),
-            "timestamp": timestamp or (session.get("created_at").timestamp() * 1000 if session.get("created_at") else None),
-        })
-    
-    # Add summaries as reels
-    for summary in summaries:
-        result = summary.get("result", {})
-        payload = summary.get("payload", {})
-        obj_id = summary.get("_id")
-        timestamp = obj_id.generation_time.timestamp() * 1000 if obj_id and hasattr(obj_id, 'generation_time') else None
+
+        # Calculate timestamp
+        timestamp = None
+        if obj_id and hasattr(obj_id, 'generation_time'):
+            timestamp = obj_id.generation_time.timestamp() * 1000
+        elif session.get("created_at"):
+            created_at = session.get("created_at")
+            if hasattr(created_at, 'timestamp'):
+                timestamp = created_at.timestamp() * 1000
+
         reels.append({
             "id": str(obj_id) if obj_id else "",
-            "type": "summary",
-            "title": payload.get("title", "Prism Summary"),
-            "summary": result.get("summary_tldr", ""),
-            "tasks": result.get("tasks", []),
-            "sentiment": result.get("sentiment", "Neutral"),
-            "source_url": payload.get("source_url", ""),
+            "type": "video_summary",
+            "title": session.get("title", "Video Summary"),
+            "summary": summary.get("tldr", ""),
+            "sentiment": summary.get("sentiment", "Neutral"),
+            "tasks": summary.get("action_items", []),
+            "key_points": summary.get("key_points", []),
+            "videoUrl": session.get("video_url"),
+            "source_url": session.get("source_url", ""),
+            "duration_seconds": session.get("duration_seconds", 0),
+            "transcript_preview": session.get("transcript", "")[:200] + "..." if session.get("transcript") else "",
             "timestamp": timestamp,
         })
-    
-    # Add diagrams as reels
-    for diagram in diagrams:
-        result = diagram.get("result", {})
-        payload = diagram.get("payload", {})
-        if result.get("type") == "diagram":
-            obj_id = diagram.get("_id")
-            timestamp = obj_id.generation_time.timestamp() * 1000 if obj_id and hasattr(obj_id, 'generation_time') else None
-            reels.append({
-                "id": str(obj_id) if obj_id else "",
-                "type": "diagram",
-                "title": "Live Diagram",
-                "summary": "Visual diagram from audio analysis",
-                "mermaid_code": result.get("mermaid_code", ""),
-                "videoUrl": None,
-                "timestamp": timestamp,
-            })
-    
-    # Sort by timestamp (newest first)
-    reels.sort(key=lambda x: x.get("timestamp") or 0, reverse=True)
-    
-    return {"reels": reels[:limit]}
+
+    return {"reels": reels}
 
 
 # ================== WEBSOCKET ENDPOINTS ==================

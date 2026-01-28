@@ -10,28 +10,37 @@ function ProcessingSessionCard({ session }) {
   const progress = session.progress || 0;
   const title = session.title || 'Recording Session...';
 
-  // Step definitions
+  // Step definitions (matching main.py progress values)
   const steps = [
-    { id: 'transcribing', label: 'Transcribing audio...', threshold: 25 },
-    { id: 'summarizing', label: 'Generating AI summary...', threshold: 50 },
-    { id: 'saving', label: 'Saving to database...', threshold: 75 },
+    { id: 'transcribing', label: 'Transcribing audio...', threshold: 10 },
+    { id: 'summarizing', label: 'Generating AI summary...', threshold: 55 },
+    { id: 'generating_video', label: 'Creating video summary...', threshold: 75 },
+    { id: 'complete', label: 'Saving to library...', threshold: 95 },
   ];
 
-  // Determine which steps are complete
+  // Determine which steps are complete based on current step from server
+  const currentStep = session.currentStep || 'transcribing';
+
   const getStepStatus = (step) => {
-    if (progress >= step.threshold + 25) return 'complete';
-    if (progress >= step.threshold) return 'active';
+    const stepOrder = ['transcribing', 'summarizing', 'generating_video', 'complete'];
+    const currentIdx = stepOrder.indexOf(currentStep);
+    const stepIdx = stepOrder.indexOf(step.id);
+
+    if (stepIdx < currentIdx) return 'complete';
+    if (stepIdx === currentIdx) return 'active';
     return 'pending';
   };
 
-  // Get status text
+  // Get status text based on current step
   const getStatusText = () => {
     if (state === 'recording') return 'Recording...';
-    if (progress < 25) return 'Preparing...';
-    if (progress < 50) return 'Transcribing audio...';
-    if (progress < 75) return 'Generating summary...';
-    if (progress < 100) return 'Saving...';
-    return 'Complete!';
+    switch (currentStep) {
+      case 'transcribing': return 'Transcribing audio...';
+      case 'summarizing': return 'Generating summary...';
+      case 'generating_video': return 'Creating video...';
+      case 'complete': return 'Complete!';
+      default: return 'Processing...';
+    }
   };
 
   // Gradient based on state

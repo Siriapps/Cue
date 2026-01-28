@@ -44,7 +44,7 @@ def list_recent(collection: str, limit: int = 20) -> List[Dict[str, Any]]:
 def save_session(session_data: Dict[str, Any]) -> str:
     """
     Save a recorded session to MongoDB.
-    
+
     Args:
         session_data: Dictionary containing session information
             - title: str
@@ -52,8 +52,10 @@ def save_session(session_data: Dict[str, Any]) -> str:
             - duration_seconds: int
             - transcript: str
             - summary: dict
+            - video_url: str (optional) - URL to Veo-generated video
+            - has_video: bool (optional) - Whether video was generated
             - created_at: datetime
-    
+
     Returns:
         The session ID as a string
     """
@@ -127,10 +129,10 @@ def update_session(session_id: str, updates: Dict[str, Any]) -> bool:
 def delete_session(session_id: str) -> bool:
     """
     Delete a session by ID.
-    
+
     Args:
         session_id: The session's ObjectId as a string
-    
+
     Returns:
         True if deletion was successful, False otherwise
     """
@@ -140,3 +142,55 @@ def delete_session(session_id: str) -> bool:
     except Exception as e:
         print(f"Error deleting session: {e}")
         return False
+
+
+def list_sessions_without_video(limit: int = 100) -> List[Dict[str, Any]]:
+    """
+    List sessions that don't have video generated yet.
+
+    Args:
+        limit: Maximum number of sessions to return
+
+    Returns:
+        List of session documents without videos
+    """
+    query = {
+        "$or": [
+            {"video_url": None},
+            {"video_url": {"$exists": False}},
+            {"has_video": False},
+            {"has_video": {"$exists": False}}
+        ]
+    }
+    sessions = list(_collection("sessions").find(query).sort("_id", -1).limit(limit))
+
+    for session in sessions:
+        if "_id" in session:
+            session["sessionId"] = str(session["_id"])
+            session["_id"] = str(session["_id"])
+
+    return sessions
+
+
+def list_sessions_with_video(limit: int = 50) -> List[Dict[str, Any]]:
+    """
+    List sessions that have video generated (for reels).
+
+    Args:
+        limit: Maximum number of sessions to return
+
+    Returns:
+        List of session documents with videos
+    """
+    query = {
+        "has_video": True,
+        "video_url": {"$ne": None}
+    }
+    sessions = list(_collection("sessions").find(query).sort("_id", -1).limit(limit))
+
+    for session in sessions:
+        if "_id" in session:
+            session["sessionId"] = str(session["_id"])
+            session["_id"] = str(session["_id"])
+
+    return sessions

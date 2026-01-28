@@ -175,13 +175,29 @@ export function LiveCompanion(): JSX.Element {
       }
     };
 
-    chrome.runtime.onMessage.addListener(handleMessage);
-    return () => {
-      chrome.runtime.onMessage.removeListener(handleMessage);
-      if (hideTimeout.current) {
-        clearTimeout(hideTimeout.current);
+    try {
+      if (!chrome?.runtime?.onMessage) {
+        throw new Error("Extension context invalidated");
       }
-    };
+      chrome.runtime.onMessage.addListener(handleMessage);
+      return () => {
+        try {
+          chrome.runtime.onMessage.removeListener(handleMessage);
+        } catch (error: any) {
+          console.error("[cue] Failed to remove listener:", error.message);
+        }
+        if (hideTimeout.current) {
+          clearTimeout(hideTimeout.current);
+        }
+      };
+    } catch (error: any) {
+      console.error("[cue] Extension context invalidated:", error.message);
+      return () => {
+        if (hideTimeout.current) {
+          clearTimeout(hideTimeout.current);
+        }
+      };
+    }
   }, []);
 
   const toggleExpanded = useCallback(() => {

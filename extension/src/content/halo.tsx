@@ -7,7 +7,7 @@ const LIBRARY_URL = "http://localhost:3001";
 
 type SessionState = "idle" | "recording" | "paused";
 
-export function HaloStrip(): JSX.Element {
+export function HaloStrip(): React.JSX.Element {
   // UI State
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
@@ -26,11 +26,22 @@ export function HaloStrip(): JSX.Element {
 
   // Load collapsed state from storage
   useEffect(() => {
-    chrome.storage?.local?.get(["haloCollapsed"], (result) => {
-      if (result.haloCollapsed !== undefined) {
-        setIsCollapsed(result.haloCollapsed);
+    try {
+      if (!chrome?.storage?.local) {
+        throw new Error("Extension context invalidated");
       }
-    });
+      chrome.storage.local.get(["haloCollapsed"], (result) => {
+        if (chrome.runtime.lastError) {
+          console.error("[cue] Failed to load collapsed state:", chrome.runtime.lastError.message);
+          return;
+        }
+        if (result.haloCollapsed !== undefined) {
+          setIsCollapsed(result.haloCollapsed);
+        }
+      });
+    } catch (error: any) {
+      console.error("[cue] Extension context invalidated:", error.message);
+    }
   }, []);
 
   // Timer effect for recording
@@ -72,7 +83,18 @@ export function HaloStrip(): JSX.Element {
   const toggleCollapse = useCallback(() => {
     const newState = !isCollapsed;
     setIsCollapsed(newState);
-    chrome.storage?.local?.set({ haloCollapsed: newState });
+    try {
+      if (!chrome?.storage?.local) {
+        throw new Error("Extension context invalidated");
+      }
+      chrome.storage.local.set({ haloCollapsed: newState }, () => {
+        if (chrome.runtime.lastError) {
+          console.error("[cue] Failed to save collapsed state:", chrome.runtime.lastError.message);
+        }
+      });
+    } catch (error: any) {
+      console.error("[cue] Extension context invalidated:", error.message);
+    }
   }, [isCollapsed]);
 
   const toggleChat = () => {
@@ -84,7 +106,31 @@ export function HaloStrip(): JSX.Element {
   };
 
   const openLibrary = () => {
-    chrome.runtime.sendMessage({ type: "OPEN_LIBRARY", url: LIBRARY_URL });
+    try {
+      if (!chrome?.runtime?.id) {
+        throw new Error("Extension context invalidated");
+      }
+      chrome.runtime.sendMessage({ type: "OPEN_LIBRARY", url: LIBRARY_URL }, (response) => {
+        // Check for errors
+        if (chrome.runtime.lastError) {
+          const errorMsg = chrome.runtime.lastError.message;
+          console.error("[cue] Failed to open library:", errorMsg);
+          // If context invalidated, try direct window.open as fallback
+          if (errorMsg.includes("message port closed") || errorMsg.includes("Extension context invalidated")) {
+            window.open(LIBRARY_URL, '_blank');
+          }
+          return;
+        }
+      });
+    } catch (error: any) {
+      console.error("[cue] Extension context invalidated:", error.message);
+      // Fallback: open library directly
+      try {
+        window.open(LIBRARY_URL, '_blank');
+      } catch (e) {
+        console.error("[cue] Failed to open library window:", e);
+      }
+    }
   };
 
   const handleAsk = () => {
@@ -96,21 +142,35 @@ export function HaloStrip(): JSX.Element {
 
     const selectedText = window.getSelection()?.toString() || "";
 
-    chrome.runtime.sendMessage(
-      {
-        type: "ASK_AI",
-        query: currentQuery,
-        selectedText: selectedText.substring(0, 500),
-      },
-      (response) => {
-        setIsThinking(false);
-        if (response?.success && response?.answer) {
-          setAiAnswer(response.answer);
-        } else {
-          setAiAnswer(response?.error || "Failed to get AI response");
-        }
+    try {
+      if (!chrome?.runtime?.id) {
+        throw new Error("Extension context invalidated");
       }
-    );
+      chrome.runtime.sendMessage(
+        {
+          type: "ASK_AI",
+          query: currentQuery,
+          selectedText: selectedText.substring(0, 500),
+        },
+        (response) => {
+          setIsThinking(false);
+          if (chrome.runtime.lastError) {
+            console.error("[cue] Failed to ask AI:", chrome.runtime.lastError.message);
+            setAiAnswer("Extension context invalidated. Please reload the page.");
+            return;
+          }
+          if (response?.success && response?.answer) {
+            setAiAnswer(response.answer);
+          } else {
+            setAiAnswer(response?.error || "Failed to get AI response");
+          }
+        }
+      );
+    } catch (error: any) {
+      console.error("[cue] Extension context invalidated:", error.message);
+      setIsThinking(false);
+      setAiAnswer("Extension context invalidated. Please reload the page.");
+    }
   };
 
   // Session Controls
@@ -127,14 +187,27 @@ export function HaloStrip(): JSX.Element {
       const pageUrl = window.location.href;
       
       // Notify background script
-      chrome.runtime.sendMessage({
-        type: "SESSION_START",
-        payload: {
-          title: pageTitle,
-          url: pageUrl,
-          startTime: Date.now(),
-        },
-      });
+      try {
+        if (!chrome?.runtime?.id) {
+          throw new Error("Extension context invalidated");
+        }
+        chrome.runtime.sendMessage({
+          type: "SESSION_START",
+          payload: {
+            title: pageTitle,
+            url: pageUrl,
+            startTime: Date.now(),
+          },
+        }, (response) => {
+          if (chrome.runtime.lastError) {
+            console.error("[cue] Failed to start session:", chrome.runtime.lastError.message);
+            setSessionState("idle");
+          }
+        });
+      } catch (error: any) {
+        console.error("[cue] Extension context invalidated:", error.message);
+        setSessionState("idle");
+      }
     } catch (error: any) {
       console.error("[cue] Failed to start session:", error);
       setSessionState("idle");
@@ -145,13 +218,35 @@ export function HaloStrip(): JSX.Element {
   const handlePauseSession = () => {
     pauseMicRecording();
     setSessionState("paused");
-    chrome.runtime.sendMessage({ type: "SESSION_PAUSE" });
+    try {
+      if (!chrome?.runtime?.id) {
+        throw new Error("Extension context invalidated");
+      }
+      chrome.runtime.sendMessage({ type: "SESSION_PAUSE" }, (response) => {
+        if (chrome.runtime.lastError) {
+          console.error("[cue] Failed to pause session:", chrome.runtime.lastError.message);
+        }
+      });
+    } catch (error: any) {
+      console.error("[cue] Extension context invalidated:", error.message);
+    }
   };
 
   const handleResumeSession = () => {
     resumeMicRecording();
     setSessionState("recording");
-    chrome.runtime.sendMessage({ type: "SESSION_RESUME" });
+    try {
+      if (!chrome?.runtime?.id) {
+        throw new Error("Extension context invalidated");
+      }
+      chrome.runtime.sendMessage({ type: "SESSION_RESUME" }, (response) => {
+        if (chrome.runtime.lastError) {
+          console.error("[cue] Failed to resume session:", chrome.runtime.lastError.message);
+        }
+      });
+    } catch (error: any) {
+      console.error("[cue] Extension context invalidated:", error.message);
+    }
   };
 
   const handleStopSession = async () => {
@@ -178,25 +273,36 @@ export function HaloStrip(): JSX.Element {
       const pageUrl = window.location.href;
       
       // Send to background for processing
-      chrome.runtime.sendMessage(
-        {
-          type: "SESSION_STOP",
-          payload: {
-            title: pageTitle,
-            url: pageUrl,
-            duration: elapsedTime,
-            audio_base64: audioBase64,
-            mime_type: "audio/webm",
-          },
-        },
-        (response) => {
-          if (response?.success) {
-            console.log("[cue] Session saved:", response.sessionId);
-          } else {
-            console.error("[cue] Failed to save session:", response?.error);
-          }
+      try {
+        if (!chrome?.runtime?.id) {
+          throw new Error("Extension context invalidated");
         }
-      );
+        chrome.runtime.sendMessage(
+          {
+            type: "SESSION_STOP",
+            payload: {
+              title: pageTitle,
+              url: pageUrl,
+              duration: elapsedTime,
+              audio_base64: audioBase64,
+              mime_type: "audio/webm",
+            },
+          },
+          (response) => {
+            if (chrome.runtime.lastError) {
+              console.error("[cue] Failed to save session:", chrome.runtime.lastError.message);
+              return;
+            }
+            if (response?.success) {
+              console.log("[cue] Session saved:", response.sessionId);
+            } else {
+              console.error("[cue] Failed to save session:", response?.error);
+            }
+          }
+        );
+      } catch (error: any) {
+        console.error("[cue] Extension context invalidated:", error.message);
+      }
     } catch (error: any) {
       console.error("[cue] Failed to stop session:", error);
       setSessionState("idle");
@@ -216,33 +322,59 @@ export function HaloStrip(): JSX.Element {
 
   // Listen for messages from background
   useEffect(() => {
-    const listener = (message: any) => {
-      if (message?.type === "PRISM_RESULT") {
-        setChatOpen(true);
-      } else if (message?.type === "AI_ANSWER") {
-        setIsThinking(false);
-        if (message.payload?.success && message.payload?.answer) {
-          setAiAnswer(message.payload.answer);
-        } else {
-          setAiAnswer(message.payload?.error || "Failed to get AI response");
-        }
-      } else if (message?.type === "GO_LIVE_STARTED") {
-        setIsLive(true);
-      } else if (message?.type === "GO_LIVE_STOPPED") {
-        setIsLive(false);
-      } else if (message?.type === "SESSION_SAVED") {
-        // Session was saved successfully
-        setSessionState("idle");
+    try {
+      if (!chrome?.runtime?.onMessage) {
+        throw new Error("Extension context invalidated");
       }
-    };
-    chrome.runtime.onMessage.addListener(listener);
-    return () => chrome.runtime.onMessage.removeListener(listener);
+      const listener = (message: any) => {
+        if (message?.type === "PRISM_RESULT") {
+          setChatOpen(true);
+        } else if (message?.type === "AI_ANSWER") {
+          setIsThinking(false);
+          if (message.payload?.success && message.payload?.answer) {
+            setAiAnswer(message.payload.answer);
+          } else {
+            setAiAnswer(message.payload?.error || "Failed to get AI response");
+          }
+        } else if (message?.type === "GO_LIVE_STARTED") {
+          setIsLive(true);
+        } else if (message?.type === "GO_LIVE_STOPPED") {
+          setIsLive(false);
+        } else if (message?.type === "SESSION_SAVED") {
+          // Session was saved successfully
+          setSessionState("idle");
+        }
+      };
+      chrome.runtime.onMessage.addListener(listener);
+      return () => {
+        try {
+          chrome.runtime.onMessage.removeListener(listener);
+        } catch (error: any) {
+          console.error("[cue] Failed to remove listener:", error.message);
+        }
+      };
+    } catch (error: any) {
+      console.error("[cue] Extension context invalidated:", error.message);
+    }
   }, []);
 
-  // Collapsed view - just the icon
+  // Collapsed view - floating icon in top-right
+  // Uses fixed positioning since parent host is centered
   if (isCollapsed) {
     return (
-      <div className="halo-collapsed" onClick={toggleCollapse}>
+      <div
+        className="halo-collapsed"
+        onClick={toggleCollapse}
+        style={{
+          position: 'fixed',
+          top: '12px',
+          right: '20px',
+          left: 'auto',
+          transform: 'none',
+          pointerEvents: 'auto',
+          zIndex: 2147483647,
+        }}
+      >
         <div className="halo-collapsed-icon">
           <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
             <circle cx="12" cy="12" r="10" fill="url(#logoGradCollapsed)" />

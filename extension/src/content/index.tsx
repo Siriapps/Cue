@@ -6,63 +6,25 @@ import { LiveCompanion } from "./live_companion";
 import haloStyles from "./halo.css?inline";
 
 const ROOT_ID = "cue-halo-root";
-const HALO_HEIGHT = 48; // Height of the halo bar in pixels
-
-// Function to update body margin based on collapsed state
-function updateBodyMargin(isCollapsed: boolean) {
-  if (document.body) {
-    if (isCollapsed) {
-      document.body.style.marginTop = "0";
-    } else {
-      document.body.style.marginTop = `${HALO_HEIGHT}px`;
-    }
-    document.body.style.transition = "margin-top 0.3s ease";
-  }
-}
-
-// Listen for collapsed state changes from storage
-if (chrome.storage?.local) {
-  chrome.storage.local.get(["haloCollapsed"], (result) => {
-    const isCollapsed = result.haloCollapsed === true;
-    updateBodyMargin(isCollapsed);
-  });
-  
-  chrome.storage.onChanged.addListener((changes, areaName) => {
-    if (areaName === "local" && changes.haloCollapsed) {
-      updateBodyMargin(changes.haloCollapsed.newValue === true);
-    }
-  });
-}
 
 function ensureRoot(): HTMLElement {
   let host = document.getElementById(ROOT_ID);
   if (!host) {
     host = document.createElement("div");
     host.id = ROOT_ID;
-    // Fixed position at top, full width
+    // Floating centered position - no body margin manipulation
     host.style.position = "fixed";
-    host.style.top = "0";
-    host.style.left = "0";
-    host.style.right = "0";
+    host.style.top = "12px";
+    host.style.left = "50%";
+    host.style.transform = "translateX(-50%)";
     host.style.zIndex = "2147483647";
-    host.style.height = `${HALO_HEIGHT}px`;
-    
+    host.style.pointerEvents = "none"; // Allow clicks to pass through to page
+
     // Insert at the beginning of the body
     if (document.body) {
       document.body.insertBefore(host, document.body.firstChild);
     } else {
       document.documentElement.appendChild(host);
-    }
-    
-    // Initial margin - check if collapsed
-    if (chrome.storage?.local) {
-      chrome.storage.local.get(["haloCollapsed"], (result) => {
-        const isCollapsed = result.haloCollapsed === true;
-        updateBodyMargin(isCollapsed);
-      });
-    } else {
-      // Default to expanded
-      updateBodyMargin(false);
     }
   }
 

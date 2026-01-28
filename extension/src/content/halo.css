@@ -1,17 +1,26 @@
-/* cue Halo Strip - Full Width Top Bar */
+/* cue Halo Strip - Liquid Glass Floating Design */
 .halo-strip {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
   gap: 8px;
-  background: linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(248,249,252,0.98) 100%);
-  padding: 8px 24px;
+  padding: 10px 20px;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+
+  /* Liquid Glass Effect */
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-radius: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.08),
+    0 2px 8px rgba(0, 0, 0, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.5);
+
+  /* Enable click capture */
+  pointer-events: auto;
   position: relative;
-  width: 100%;
-  height: 48px;
   box-sizing: border-box;
 }
 
@@ -21,48 +30,50 @@
   align-items: center;
   justify-content: center;
   gap: 8px;
-  flex: 1;
-  margin: 0 auto;
 }
 
-/* Collapsed State - Icon only on right side of top bar */
+/* Collapsed State - Floating icon */
 .halo-collapsed {
-  position: absolute;
-  top: 6px;
-  right: 16px;
-  z-index: 2147483647;
+  pointer-events: auto;
   cursor: pointer;
   transition: transform 0.2s ease;
 }
 
 .halo-collapsed:hover {
-  transform: scale(1.1);
+  transform: scale(1.08);
 }
 
 .halo-collapsed-icon {
-  width: 36px;
-  height: 36px;
-  background: white;
-  border-radius: 50%;
+  width: 44px;
+  height: 44px;
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
-  border: 1px solid rgba(0, 0, 0, 0.08);
   position: relative;
+
+  /* Liquid Glass Effect */
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  box-shadow:
+    0 4px 16px rgba(0, 0, 0, 0.1),
+    0 2px 4px rgba(0, 0, 0, 0.05),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6);
 }
 
 .halo-collapsed-icon svg {
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
 }
 
 .recording-badge {
   position: absolute;
   top: -2px;
   right: -2px;
-  width: 10px;
-  height: 10px;
+  width: 12px;
+  height: 12px;
   background: #ef4444;
   border-radius: 50%;
   border: 2px solid white;
@@ -76,27 +87,24 @@
 
 /* Collapse Button - Right Side */
 .halo-collapse-btn {
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
   border: none;
-  background: transparent;
-  color: #9ca3af;
+  background: rgba(0, 0, 0, 0.05);
+  color: #6b7280;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   transition: all 0.2s;
   flex-shrink: 0;
-  position: absolute;
-  right: 16px;
-  top: 50%;
-  transform: translateY(-50%);
+  margin-left: 8px;
 }
 
 .halo-collapse-btn:hover {
-  background: #f3f4f6;
-  color: #6b7280;
+  background: rgba(0, 0, 0, 0.1);
+  color: #374151;
 }
 
 /* Brand Section */
@@ -104,7 +112,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding-right: 10px;
+  padding-right: 12px;
   border-right: 1px solid rgba(0, 0, 0, 0.08);
   margin-right: 4px;
 }
@@ -122,7 +130,7 @@
 
 .halo-brand-text {
   font-weight: 700;
-  font-size: 15px;
+  font-size: 14px;
   color: #1a1a2e;
   letter-spacing: -0.3px;
 }
@@ -139,8 +147,8 @@
   align-items: center;
   gap: 6px;
   padding: 6px 12px;
-  background: #fef2f2;
-  border-radius: 8px;
+  background: rgba(239, 68, 68, 0.1);
+  border-radius: 12px;
   font-family: 'SF Mono', 'Consolas', monospace;
 }
 
@@ -165,15 +173,15 @@
 .timer-text {
   font-size: 13px;
   font-weight: 600;
-  color: #991b1b;
+  color: #dc2626;
   min-width: 42px;
 }
 
 /* Divider */
 .halo-divider {
   width: 1px;
-  height: 24px;
-  background: rgba(0, 0, 0, 0.08);
+  height: 20px;
+  background: rgba(0, 0, 0, 0.1);
   margin: 0 4px;
 }
 
@@ -182,8 +190,8 @@
   display: flex;
   align-items: center;
   gap: 5px;
-  padding: 7px 14px;
-  border-radius: 8px;
+  padding: 8px 14px;
+  border-radius: 12px;
   border: none;
   font-size: 12px;
   font-weight: 600;
@@ -202,62 +210,62 @@
 .halo-btn.start-session {
   background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
   color: white;
-  box-shadow: 0 2px 6px rgba(34, 197, 94, 0.25);
+  box-shadow: 0 2px 8px rgba(34, 197, 94, 0.3);
 }
 
 .halo-btn.start-session:hover {
   transform: translateY(-1px);
-  box-shadow: 0 3px 10px rgba(34, 197, 94, 0.35);
+  box-shadow: 0 4px 12px rgba(34, 197, 94, 0.4);
 }
 
-/* Pause Button - Yellow/Orange */
+/* Pause Button - Amber */
 .halo-btn.pause-btn {
   background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
   color: white;
-  padding: 7px 10px;
-  box-shadow: 0 2px 6px rgba(245, 158, 11, 0.25);
+  padding: 8px 10px;
+  box-shadow: 0 2px 8px rgba(245, 158, 11, 0.3);
 }
 
 .halo-btn.pause-btn:hover {
   transform: translateY(-1px);
-  box-shadow: 0 3px 10px rgba(245, 158, 11, 0.35);
+  box-shadow: 0 4px 12px rgba(245, 158, 11, 0.4);
 }
 
 /* Resume Button - Green */
 .halo-btn.resume-btn {
   background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
   color: white;
-  padding: 7px 10px;
-  box-shadow: 0 2px 6px rgba(34, 197, 94, 0.25);
+  padding: 8px 10px;
+  box-shadow: 0 2px 8px rgba(34, 197, 94, 0.3);
 }
 
 .halo-btn.resume-btn:hover {
   transform: translateY(-1px);
-  box-shadow: 0 3px 10px rgba(34, 197, 94, 0.35);
+  box-shadow: 0 4px 12px rgba(34, 197, 94, 0.4);
 }
 
 /* Stop Button - Red */
 .halo-btn.stop-btn {
   background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
   color: white;
-  box-shadow: 0 2px 6px rgba(239, 68, 68, 0.25);
+  box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
 }
 
 .halo-btn.stop-btn:hover {
   transform: translateY(-1px);
-  box-shadow: 0 3px 10px rgba(239, 68, 68, 0.35);
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.4);
 }
 
 /* Go Live Button - Red */
 .halo-btn.go-live {
   background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
   color: white;
-  box-shadow: 0 2px 6px rgba(239, 68, 68, 0.25);
+  box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
 }
 
 .halo-btn.go-live:hover {
   transform: translateY(-1px);
-  box-shadow: 0 3px 10px rgba(239, 68, 68, 0.35);
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.4);
 }
 
 .halo-btn.go-live.active {
@@ -265,8 +273,8 @@
 }
 
 @keyframes live-pulse {
-  0%, 100% { box-shadow: 0 2px 6px rgba(239, 68, 68, 0.25); }
-  50% { box-shadow: 0 3px 16px rgba(239, 68, 68, 0.5); }
+  0%, 100% { box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3); }
+  50% { box-shadow: 0 4px 20px rgba(239, 68, 68, 0.6); }
 }
 
 .live-indicator {
@@ -290,52 +298,61 @@
 .halo-btn.ask-ai {
   background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
   color: white;
-  box-shadow: 0 2px 6px rgba(139, 92, 246, 0.25);
+  box-shadow: 0 2px 8px rgba(139, 92, 246, 0.3);
 }
 
 .halo-btn.ask-ai:hover {
   transform: translateY(-1px);
-  box-shadow: 0 3px 10px rgba(139, 92, 246, 0.35);
+  box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4);
 }
 
 /* Library Button - Purple */
 .halo-btn.library {
   background: linear-gradient(135deg, #a855f7 0%, #9333ea 100%);
   color: white;
-  box-shadow: 0 2px 6px rgba(168, 85, 247, 0.25);
+  box-shadow: 0 2px 8px rgba(168, 85, 247, 0.3);
 }
 
 .halo-btn.library:hover {
   transform: translateY(-1px);
-  box-shadow: 0 3px 10px rgba(168, 85, 247, 0.35);
+  box-shadow: 0 4px 12px rgba(168, 85, 247, 0.4);
 }
 
-/* Chat Panel */
+/* Chat Panel - Liquid Glass */
 .halo-chat {
   position: fixed;
-  top: 56px;
-  right: 24px;
-  width: 360px;
-  background: white;
-  border-radius: 12px;
-  padding: 14px;
+  top: 70px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 380px;
+  padding: 16px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
-  border: 1px solid rgba(0, 0, 0, 0.06);
-  animation: slide-down 0.2s ease-out;
+  gap: 12px;
+  animation: slide-down 0.25s ease-out;
   z-index: 2147483646;
+  pointer-events: auto;
+
+  /* Liquid Glass Effect */
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  box-shadow:
+    0 12px 40px rgba(0, 0, 0, 0.12),
+    0 4px 12px rgba(0, 0, 0, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6);
 }
 
 @keyframes slide-down {
   from {
     opacity: 0;
-    transform: translateY(-6px);
+    transform: translateX(-50%) translateY(-8px);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateX(-50%) translateY(0);
   }
 }
 
@@ -343,7 +360,7 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   color: #1a1a2e;
 }
@@ -351,32 +368,40 @@
 .halo-close {
   background: none;
   border: none;
-  font-size: 18px;
+  font-size: 20px;
   color: #9ca3af;
   cursor: pointer;
   padding: 0;
   line-height: 1;
   transition: color 0.2s;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
 }
 
 .halo-close:hover {
   color: #374151;
+  background: rgba(0, 0, 0, 0.05);
 }
 
 .halo-input {
-  background: #f8f9fc;
-  border: 1px solid #e5e7eb;
+  background: rgba(255, 255, 255, 0.6);
+  border: 1px solid rgba(0, 0, 0, 0.08);
   color: #1a1a2e;
-  padding: 10px 14px;
-  border-radius: 10px;
-  font-size: 13px;
+  padding: 12px 16px;
+  border-radius: 14px;
+  font-size: 14px;
   outline: none;
   transition: all 0.2s;
 }
 
 .halo-input:focus {
-  border-color: #8b5cf6;
+  border-color: rgba(139, 92, 246, 0.5);
   box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.1);
+  background: rgba(255, 255, 255, 0.8);
 }
 
 .halo-input::placeholder {
@@ -391,29 +416,29 @@
 .halo-btn.send-btn {
   background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
   color: white;
-  padding: 8px 18px;
-  font-size: 12px;
-  box-shadow: 0 2px 6px rgba(99, 102, 241, 0.25);
+  padding: 10px 20px;
+  font-size: 13px;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
 }
 
 .halo-btn.send-btn:hover {
   transform: translateY(-1px);
-  box-shadow: 0 3px 10px rgba(99, 102, 241, 0.35);
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
 }
 
 /* Answer Display */
 .halo-answer {
-  padding: 10px;
-  background: #f8f9fc;
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.5);
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  border-radius: 14px;
 }
 
 .halo-thinking {
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 12px;
+  font-size: 13px;
   color: #6b7280;
   font-style: italic;
 }
@@ -436,9 +461,9 @@
 }
 
 .halo-answer-text {
-  font-size: 13px;
+  font-size: 14px;
   color: #374151;
-  line-height: 1.5;
+  line-height: 1.6;
   white-space: pre-wrap;
   word-wrap: break-word;
 }
@@ -446,17 +471,25 @@
 /* Dark Mode Support */
 @media (prefers-color-scheme: dark) {
   .halo-strip {
-    background: linear-gradient(180deg, rgba(26,26,46,0.98) 0%, rgba(15,17,23,0.98) 100%);
-    border-bottom-color: rgba(255, 255, 255, 0.08);
+    background: rgba(30, 30, 45, 0.8);
+    border-color: rgba(255, 255, 255, 0.1);
+    box-shadow:
+      0 8px 32px rgba(0, 0, 0, 0.3),
+      0 2px 8px rgba(0, 0, 0, 0.2),
+      inset 0 1px 0 rgba(255, 255, 255, 0.1);
   }
 
   .halo-collapsed-icon {
-    background: #1a1a2e;
-    border-color: rgba(255, 255, 255, 0.1);
+    background: rgba(30, 30, 45, 0.85);
+    border-color: rgba(255, 255, 255, 0.15);
+    box-shadow:
+      0 4px 16px rgba(0, 0, 0, 0.3),
+      0 2px 4px rgba(0, 0, 0, 0.2),
+      inset 0 1px 0 rgba(255, 255, 255, 0.1);
   }
 
   .halo-brand {
-    border-right-color: rgba(255, 255, 255, 0.08);
+    border-right-color: rgba(255, 255, 255, 0.1);
   }
 
   .halo-brand-text {
@@ -464,20 +497,21 @@
   }
 
   .halo-collapse-btn {
-    color: #6b7280;
+    background: rgba(255, 255, 255, 0.05);
+    color: #9ca3af;
   }
 
   .halo-collapse-btn:hover {
     background: rgba(255, 255, 255, 0.1);
-    color: #9ca3af;
+    color: #e5e7eb;
   }
 
   .halo-divider {
-    background: rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.1);
   }
 
   .session-timer {
-    background: rgba(239, 68, 68, 0.1);
+    background: rgba(239, 68, 68, 0.15);
   }
 
   .timer-text {
@@ -485,18 +519,36 @@
   }
 
   .halo-chat {
-    background: #1a1a2e;
-    border-color: rgba(255, 255, 255, 0.08);
+    background: rgba(30, 30, 45, 0.9);
+    border-color: rgba(255, 255, 255, 0.1);
+    box-shadow:
+      0 12px 40px rgba(0, 0, 0, 0.4),
+      0 4px 12px rgba(0, 0, 0, 0.3),
+      inset 0 1px 0 rgba(255, 255, 255, 0.08);
   }
 
   .halo-chat-header {
     color: #f9fafb;
   }
 
+  .halo-close {
+    color: #6b7280;
+  }
+
+  .halo-close:hover {
+    color: #d1d5db;
+    background: rgba(255, 255, 255, 0.1);
+  }
+
   .halo-input {
-    background: #0f1117;
+    background: rgba(0, 0, 0, 0.3);
     border-color: rgba(255, 255, 255, 0.08);
     color: #f9fafb;
+  }
+
+  .halo-input:focus {
+    border-color: rgba(139, 92, 246, 0.5);
+    background: rgba(0, 0, 0, 0.4);
   }
 
   .halo-input::placeholder {
@@ -504,8 +556,8 @@
   }
 
   .halo-answer {
-    background: #0f1117;
-    border-color: rgba(255, 255, 255, 0.08);
+    background: rgba(0, 0, 0, 0.2);
+    border-color: rgba(255, 255, 255, 0.05);
   }
 
   .halo-answer-text {

@@ -5,7 +5,6 @@ import AudioSessionCard from './components/AudioSessionCard';
 import PrismTaskCard from './components/PrismTaskCard';
 import ReelsFeed from './components/ReelsFeed';
 import AvatarViewer from './components/AvatarViewer';
-import DashboardHalo from './components/DashboardHalo';
 import SessionDetail from './components/SessionDetail';
 import './App.css';
 
@@ -75,26 +74,94 @@ function App() {
         else if (data.type === 'SESSION_RESULT') {
           // Remove from processing
           setProcessingSessions(prev => prev.filter(s => s.id !== data.sessionId));
-          
+
+          // Transform summary to match SessionCard expected format
+          const summary = data.summary || {};
+          const transformedSummary = {
+            tldr: summary.tldr || summary.summary_tldr || 'No summary available',
+            key_points: summary.key_points || [],
+            action_items: (summary.action_items || summary.tasks || []).map(item => ({
+              task: typeof item === 'string' ? item : (item.task || item.action || item),
+              priority: item.priority || 'Medium'
+            })),
+            sentiment: summary.sentiment || 'Neutral',
+            topic: summary.topic || ''
+          };
+
           // Add the completed session to liveSessions for immediate display
           const newSession = {
             sessionId: data.sessionId,
             title: data.title,
             source_url: data.source_url,
             duration_seconds: data.duration_seconds,
-            transcript: data.transcript,
-            summary: data.summary,
-            created_at: data.created_at,
+            transcript: data.transcript || '',
+            summary: transformedSummary,
+            video_url: data.video_url || null,
+            has_video: data.has_video || !!data.video_url,
+            created_at: data.created_at || new Date().toISOString(),
             isLive: true, // Mark as live session for immediate display
           };
-          
+
           setLiveSessions(prev => [newSession, ...prev]);
-          console.log('[cue] Live session added:', data.title);
-          
+          console.log('[cue] Live session added:', data.title, 'has_video:', data.has_video, 'video_url:', data.video_url);
+
+          // If video was generated, add to reels immediately (before MongoDB save)
+          if (data.has_video && data.video_url) {
+            try {
+              setReels(prev => {
+                try {
+                  // Ensure prev is an array
+                  const prevArray = Array.isArray(prev) ? prev : [];
+                  
+                  // Check if already exists
+                  const exists = prevArray.some(r => r && r.id === data.sessionId);
+                  if (exists) return prevArray;
+                  
+                  // Transform action_items to match ReelsFeed expected format (task.action)
+                  const tasks = (transformedSummary.action_items || []).map(item => ({
+                    action: item.task || item.action || item,
+                    priority: item.priority || 'Medium'
+                  }));
+                  
+                  // Add new reel with video
+                  const newReel = {
+                    id: data.sessionId,
+                    type: 'video_summary',
+                    title: data.title || 'Untitled Session',
+                    summary: transformedSummary.tldr || 'No summary available',
+                    sentiment: transformedSummary.sentiment || 'Neutral',
+                    tasks: tasks,
+                    key_points: transformedSummary.key_points || [],
+                    videoUrl: data.video_url,
+                    source_url: data.source_url || '',
+                    duration_seconds: data.duration_seconds || 0,
+                    transcript_preview: (data.transcript || '').substring(0, 200) + '...',
+                    timestamp: new Date(data.created_at || Date.now()).getTime(),
+                  };
+                  return [newReel, ...prevArray];
+                } catch (reelError) {
+                  console.error('[cue] Error adding reel to state:', reelError);
+                  // Return prev (which is already an array or will be converted)
+                  return Array.isArray(prev) ? prev : [];
+                }
+              });
+              console.log('[cue] Added session to reels immediately:', data.title, 'videoUrl:', data.video_url);
+            } catch (error) {
+              console.error('[cue] Failed to add session to reels:', error);
+            }
+          }
+
           // Also refresh sessions from DB (session is now saved to MongoDB)
           setTimeout(() => {
             loadSessions();
-          }, 1000); // Small delay to ensure MongoDB save is complete
+          }, 2000); // Delay to ensure MongoDB save is complete
+
+          // Refresh reels from DB to get any updates (after MongoDB save)
+          if (data.has_video) {
+            setTimeout(() => {
+              loadReels();
+            }, 2500);
+          }
         }
         
         else if (data.type === 'SESSION_COMPLETE') {
@@ -106,6 +173,16 @@ function App() {
           // Remove from processing on error
           setProcessingSessions(prev => prev.filter(s => s.id !== data.sessionId));
           console.error('Session processing error:', data.error);
+        }
+        
+        else if (data.type === 'SESSION_ID_UPDATE') {
+          // Update session ID after MongoDB save (temp UUID -> MongoDB ObjectId)
+          setLiveSessions(prev => prev.map(s => 
+            s.sessionId === data.tempSessionId 
+              ? { ...s, sessionId: data.dbSessionId }
+              : s
+          ));
+          console.log('[cue] Updated session ID:', data.tempSessionId, '->', data.dbSessionId);
         }
         
       } catch (e) {
@@ -128,97 +205,8 @@ function App() {
     dashboardWsRef.current = ws;
   }, []);
 
-  useEffect(() => {
-    loadSessions();
-    loadSummaries();
-    loadDiagrams();
-    loadReels();
-    connectDashboardWS();
-    
-    // Refresh sessions more frequently to catch new recordings
-    const sessionInterval = setInterval(loadSessions, 5000);
-    const memoryInterval = setInterval(() => {
-      loadSummaries();
-      loadDiagrams();
-      loadReels();
-    }, 5000);
-    
-    return () => {
-      clearInterval(sessionInterval);
-      clearInterval(memoryInterval);
-      if (avatarWsRef.current) {
-        avatarWsRef.current.close();
-      }
-      if (dashboardWsRef.current) {
-        dashboardWsRef.current.close();
-      }
-    };
-  }, [connectDashboardWS]);
-
-  // WebSocket connection for live avatar updates
-  const connectAvatarWS = useCallback(() => {
-    if (avatarWsRef.current?.readyState === WebSocket.OPEN) return;
-
-    const ws = new WebSocket(`${WS_URL}/ws/puppeteer`);
-    
-    ws.onopen = () => {
-      console.log('Avatar WebSocket connected');
-      setIsAvatarLive(true);
-    };
-    
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type === 'pose') {
-          setAvatarPose(data);
-          setMotionContext(data.context || null);
-          setPoseHistory(prev => [...prev.slice(-19), { ...data, timestamp: Date.now() }]);
-        } else if (data.type === 'motion') {
-          setMotionContext(data.context || null);
-        }
-      } catch (e) {
-        console.error('Failed to parse WebSocket message:', e);
-      }
-    };
-    
-    ws.onclose = () => {
-      console.log('Avatar WebSocket closed');
-      setIsAvatarLive(false);
-      avatarWsRef.current = null;
-    };
-    
-    ws.onerror = (error) => {
-      console.error('Avatar WebSocket error:', error);
-    };
-    
-    avatarWsRef.current = ws;
-  }, []);
-
-  const disconnectAvatarWS = useCallback(() => {
-    if (avatarWsRef.current) {
-      avatarWsRef.current.close();
-      avatarWsRef.current = null;
-    }
-    setIsAvatarLive(false);
-  }, []);
-
-  const loadPresetPose = useCallback(async (poseName) => {
-    try {
-      const response = await fetch(`${ADK_API_URL}/pose`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pose_name: poseName }),
-      });
-      const data = await response.json();
-      if (!data.error) {
-        setAvatarPose(data);
-      }
-    } catch (error) {
-      console.error('Error loading preset pose:', error);
-    }
-  }, []);
-
-  const loadSessions = async () => {
+  // Define load functions before useEffect that uses them
+  const loadSessions = useCallback(async () => {
     try {
       setLoading(true);
       
@@ -244,6 +232,8 @@ function App() {
           transcript: session.transcript || '',
           duration_seconds: session.duration_seconds || 0,
           created_at: session.created_at || session._id?.$date || new Date().toISOString(),
+          video_url: session.video_url || null,
+          has_video: session.has_video || !!session.video_url,
           summary: {
             tldr: summary.tldr || summary.summary_tldr || 'No summary available',
             key_points: summary.key_points || [],
@@ -321,13 +311,9 @@ function App() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  useEffect(() => {
-    loadSessions();
-  }, [filter, searchQuery]);
-
-  const loadSummaries = async () => {
+  const loadSummaries = useCallback(async () => {
     try {
       const response = await fetch(`${ADK_API_URL}/summaries?limit=20`);
       const result = await response.json();
@@ -336,9 +322,9 @@ function App() {
       console.error('Error loading summaries:', error);
       setSummaries([]);
     }
-  };
+  }, []);
 
-  const loadDiagrams = async () => {
+  const loadDiagrams = useCallback(async () => {
     try {
       const response = await fetch(`${ADK_API_URL}/diagrams?limit=20`);
       const result = await response.json();
@@ -347,18 +333,152 @@ function App() {
       console.error('Error loading diagrams:', error);
       setDiagrams([]);
     }
-  };
+  }, []);
 
-  const loadReels = async () => {
+  const loadReels = useCallback(async () => {
     try {
       const response = await fetch(`${ADK_API_URL}/reels?limit=50`);
+      
+      if (!response.ok) {
+        console.warn(`[cue] Failed to load reels: HTTP ${response.status}`);
+        return; // Don't update reels on error
+      }
+      
       const result = await response.json();
-      setReels(result.reels || []);
+      const dbReels = result?.reels || [];
+      
+      // Merge with existing reels (preserve live reels that haven't been saved yet)
+      setReels(prev => {
+        try {
+          const reelMap = new Map();
+          
+          // Add DB reels first (they have MongoDB IDs)
+          if (Array.isArray(dbReels)) {
+            dbReels.forEach(reel => {
+              if (reel && reel.id) {
+                reelMap.set(reel.id, reel);
+              }
+            });
+          }
+          
+          // Add live reels that aren't in DB yet (by checking if ID doesn't exist in DB reels)
+          if (Array.isArray(prev)) {
+            prev.forEach(reel => {
+              if (reel && reel.id && !reelMap.has(reel.id)) {
+                reelMap.set(reel.id, reel);
+              }
+            });
+          }
+          
+          return Array.from(reelMap.values()).sort((a, b) => {
+            const timeA = a?.timestamp || 0;
+            const timeB = b?.timestamp || 0;
+            return timeB - timeA; // Newest first
+          });
+        } catch (mergeError) {
+          console.error('[cue] Error merging reels:', mergeError);
+          return prev || []; // Return previous state on merge error
+        }
+      });
     } catch (error) {
-      console.error('Error loading reels:', error);
-      setReels([]);
+      console.error('[cue] Error loading reels:', error);
+      // Don't clear reels on error - preserve existing ones
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    loadSessions();
+    loadSummaries();
+    loadDiagrams();
+    loadReels();
+    connectDashboardWS();
+    
+    // Refresh sessions more frequently to catch new recordings
+    const sessionInterval = setInterval(loadSessions, 5000);
+    const memoryInterval = setInterval(() => {
+      loadSummaries();
+      loadDiagrams();
+      loadReels();
+    }, 5000);
+    
+    return () => {
+      clearInterval(sessionInterval);
+      clearInterval(memoryInterval);
+      if (avatarWsRef.current) {
+        avatarWsRef.current.close();
+      }
+      if (dashboardWsRef.current) {
+        dashboardWsRef.current.close();
+      }
+    };
+  }, [connectDashboardWS, loadSessions, loadSummaries, loadDiagrams, loadReels]);
+
+  // WebSocket connection for live avatar updates
+  const connectAvatarWS = useCallback(() => {
+    if (avatarWsRef.current?.readyState === WebSocket.OPEN) return;
+
+    const ws = new WebSocket(`${WS_URL}/ws/puppeteer`);
+    
+    ws.onopen = () => {
+      console.log('Avatar WebSocket connected');
+      setIsAvatarLive(true);
+    };
+    
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'pose') {
+          setAvatarPose(data);
+          setMotionContext(data.context || null);
+          setPoseHistory(prev => [...prev.slice(-19), { ...data, timestamp: Date.now() }]);
+        } else if (data.type === 'motion') {
+          setMotionContext(data.context || null);
+        }
+      } catch (e) {
+        console.error('Failed to parse WebSocket message:', e);
+      }
+    };
+    
+    ws.onclose = () => {
+      console.log('Avatar WebSocket closed');
+      setIsAvatarLive(false);
+      avatarWsRef.current = null;
+    };
+    
+    ws.onerror = (error) => {
+      console.error('Avatar WebSocket error:', error);
+    };
+    
+    avatarWsRef.current = ws;
+  }, []);
+
+  const disconnectAvatarWS = useCallback(() => {
+    if (avatarWsRef.current) {
+      avatarWsRef.current.close();
+      avatarWsRef.current = null;
+    }
+    setIsAvatarLive(false);
+  }, []);
+
+  const loadPresetPose = useCallback(async (poseName) => {
+    try {
+      const response = await fetch(`${ADK_API_URL}/pose`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pose_name: poseName }),
+      });
+      const data = await response.json();
+      if (!data.error) {
+        setAvatarPose(data);
+      }
+    } catch (error) {
+      console.error('Error loading preset pose:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadSessions();
+  }, [filter, searchQuery, loadSessions]);
 
   const handleRecordNew = () => {
     // Open instructions for using the extension
@@ -507,9 +627,6 @@ function App() {
 
   return (
     <div className="library-app">
-      {/* Dashboard Halo Strip - Top Bar */}
-      <DashboardHalo />
-      
       {/* Sidebar */}
       <div className="library-sidebar">
         <div className="sidebar-brand">

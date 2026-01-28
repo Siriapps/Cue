@@ -88,9 +88,8 @@ function SessionCard({ session, formatDate, formatDuration, onClick, onDelete })
   const sessionIndex = session.sessionId ? 
     parseInt(session.sessionId.slice(-1), 16) : 0;
 
-  // Check if session has video
-  const hasVideo = session.videoUrl || session.hasVideo || 
-    (session.source_url && (session.source_url.includes('youtube') || session.source_url.includes('meet')));
+  // Check if session has a Veo-generated video
+  const hasVideo = session.video_url || session.videoUrl || session.has_video || session.hasVideo;
 
   return (
     <div className={`session-card echoes-style ${expanded ? 'expanded' : ''}`} onClick={handleCardClick}>
