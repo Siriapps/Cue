@@ -22,7 +22,7 @@ from dotenv import load_dotenv  # type: ignore[import-untyped]
 load_dotenv()
 
 from app.db.mongo import get_db
-from app.agents.veo_service import generate_video_from_summary
+from app.agents.gemini_client import generate_video_from_summary
 from bson import ObjectId  # type: ignore[import-untyped]
 
 

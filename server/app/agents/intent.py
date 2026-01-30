@@ -1,5 +1,6 @@
 from typing import Any, Dict
 
+
 from app.agents.gemini_client import call_gemini
 
 

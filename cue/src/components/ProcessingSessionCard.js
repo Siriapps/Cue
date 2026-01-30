@@ -13,16 +13,17 @@ function ProcessingSessionCard({ session }) {
   // Step definitions (matching main.py progress values)
   const steps = [
     { id: 'transcribing', label: 'Transcribing audio...', threshold: 10 },
-    { id: 'summarizing', label: 'Generating AI summary...', threshold: 55 },
+    { id: 'summarizing', label: 'Sending to Gemini...', threshold: 55 },
     { id: 'generating_video', label: 'Creating video summary...', threshold: 75 },
-    { id: 'complete', label: 'Saving to library...', threshold: 95 },
+    { id: 'saving_to_db', label: 'Saving to MongoDB...', threshold: 98 },
+    { id: 'complete', label: 'Complete', threshold: 100 },
   ];
 
   // Determine which steps are complete based on current step from server
   const currentStep = session.currentStep || 'transcribing';
 
   const getStepStatus = (step) => {
-    const stepOrder = ['transcribing', 'summarizing', 'generating_video', 'complete'];
+    const stepOrder = ['transcribing', 'summarizing', 'generating_video', 'saving_to_db', 'complete'];
     const currentIdx = stepOrder.indexOf(currentStep);
     const stepIdx = stepOrder.indexOf(step.id);
 
@@ -36,8 +37,9 @@ function ProcessingSessionCard({ session }) {
     if (state === 'recording') return 'Recording...';
     switch (currentStep) {
       case 'transcribing': return 'Transcribing audio...';
-      case 'summarizing': return 'Generating summary...';
+      case 'summarizing': return 'Sending to Gemini...';
       case 'generating_video': return 'Creating video...';
+      case 'saving_to_db': return 'Saving to MongoDB...';
       case 'complete': return 'Complete!';
       default: return 'Processing...';
     }

@@ -18,7 +18,7 @@ from app.agents.ask_ai import ask_ai
 from app.agents.motion import extract_motions, parse_motion_to_animation_hint
 from app.agents.puppeteer import generate_pose_for_motion, generate_pose_sequence, get_preset_pose
 from app.agents.transcriber import transcribe_audio, generate_session_summary
-from app.agents.veo_service import generate_video_from_summary
+from app.agents.gemini_client import generate_video_from_summary
 from app.db.repository import (
     save_context_event,
     save_diagram_event,
@@ -266,6 +266,7 @@ async def save_session_endpoint(payload: SessionSaveRequest) -> Dict[str, Any]:
     Broadcasts progress and final result to connected dashboards.
     NOTE: Does NOT save to MongoDB - displays directly in dashboard.
     """
+    import traceback as tb
     session_id = str(uuid.uuid4())
     
     try:
@@ -290,10 +291,27 @@ async def save_session_endpoint(payload: SessionSaveRequest) -> Dict[str, Any]:
         })
         
         print(f"[cue] Transcribing audio for session: {payload.title}")
-        transcript = transcribe_audio(
-            audio_base64=payload.audio_base64,
-            mime_type=payload.mime_type,
-        )
+        try:
+            transcript = transcribe_audio(
+                audio_base64=payload.audio_base64,
+                mime_type=payload.mime_type,
+            )
+        except Exception as transcribe_err:
+            trace = tb.format_exc()
+            print(f"[cue] Transcription failed: {transcribe_err}")
+            print(f"[cue] Traceback: {trace}")
+            await dashboard_manager.broadcast({
+                "type": "SESSION_ERROR",
+                "sessionId": session_id,
+                "error": str(transcribe_err),
+            })
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "error": f"Transcription failed: {transcribe_err}",
+                }
+            )
         
         if not transcript:
             transcript = "[No speech detected in recording]"
@@ -316,11 +334,28 @@ async def save_session_endpoint(payload: SessionSaveRequest) -> Dict[str, Any]:
         })
         
         print(f"[cue] Generating summary for session: {payload.title}")
-        summary = generate_session_summary(
-            transcript=transcript,
-            title=payload.title,
-            source_url=payload.source_url,
-        )
+        try:
+            summary = generate_session_summary(
+                transcript=transcript,
+                title=payload.title,
+                source_url=payload.source_url,
+            )
+        except Exception as summary_err:
+            trace = tb.format_exc()
+            print(f"[cue] Summary generation failed: {summary_err}")
+            print(f"[cue] Traceback: {trace}")
+            await dashboard_manager.broadcast({
+                "type": "SESSION_ERROR",
+                "sessionId": session_id,
+                "error": str(summary_err),
+            })
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "error": f"Summary failed: {summary_err}",
+                }
+            )
         
         print(f"[cue] Summary generated: {summary.get('tldr', 'No TLDR')[:100]}...")
         
@@ -374,11 +409,12 @@ async def save_session_endpoint(payload: SessionSaveRequest) -> Dict[str, Any]:
                 print(f"[cue] Video generation failed (non-fatal): {video_error}")
                 # Continue without video - not a fatal error
 
+        # Step 4: Saving to MongoDB (98%)
         await dashboard_manager.broadcast({
             "type": "SESSION_PROGRESS",
             "sessionId": session_id,
-            "progress": 100,
-            "step": "complete",
+            "progress": 98,
+            "step": "saving_to_db",
         })
 
         # Prepare session data
@@ -432,8 +468,14 @@ async def save_session_endpoint(payload: SessionSaveRequest) -> Dict[str, Any]:
                 })
         except Exception as db_error:
             print(f"[cue] MongoDB save failed (session already displayed): {db_error}")
-            import traceback
-            traceback.print_exc()
+            tb.print_exc()
+
+        await dashboard_manager.broadcast({
+            "type": "SESSION_PROGRESS",
+            "sessionId": session_id,
+            "progress": 100,
+            "step": "complete",
+        })
 
         return {
             "success": True,
@@ -466,8 +508,9 @@ async def save_session_endpoint(payload: SessionSaveRequest) -> Dict[str, Any]:
 
 
 @app.get("/sessions")
-async def get_sessions(limit: int = 50) -> Dict[str, Any]:
-    """Get list of recorded sessions with their summaries."""
+async def get_sessions(limit: int = 200) -> Dict[str, Any]:
+    """Get list of recorded sessions with their summaries. Default limit 200."""
+    limit = min(limit, 500)  # Cap at 500
     sessions = list_sessions(limit=limit)
     return {"sessions": sessions}
 

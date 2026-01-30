@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from app.db.repository import list_sessions, update_session
-from app.agents.veo_service import generate_video_from_summary
+from app.agents.gemini_client import generate_video_from_summary
 
 
 async def backfill_videos(dry_run: bool = False):

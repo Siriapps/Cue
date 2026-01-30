@@ -108,6 +108,19 @@ async function stopSessionRecording(payload: {
       console.error("[cue] Backend error:", errorMessage);
       sessionState = "idle";
       sessionInfo = null;
+      // Surface error in UI (e.g. dashboard/popup can show toast)
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (tab?.id) {
+          chrome.tabs.sendMessage(tab.id, { type: "SESSION_SAVE_ERROR", payload: { error: errorMessage } }, () => {
+            if (chrome.runtime.lastError) {
+              // Content script may not be on this page; ignore
+            }
+          });
+        }
+      } catch {
+        // Ignore
+      }
       return { success: false, error: errorMessage };
     }
 

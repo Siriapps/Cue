@@ -35,6 +35,9 @@ function App() {
   const dashboardWsRef = useRef(null);
   const [dashboardConnected, setDashboardConnected] = useState(false);
 
+  // Tick state to re-render session cards so "Xm ago" updates without refresh
+  const [timeTick, setTimeTick] = useState(() => Date.now());
+
   // Connect to dashboard WebSocket for progress updates
   const connectDashboardWS = useCallback(() => {
     if (dashboardWsRef.current?.readyState === WebSocket.OPEN) return;
@@ -51,15 +54,22 @@ function App() {
         const data = JSON.parse(event.data);
         
         if (data.type === 'SESSION_PROCESSING_START') {
-          // Add new processing session
-          setProcessingSessions(prev => [...prev, {
-            id: data.sessionId,
-            title: data.title || 'Processing Session...',
-            source_url: data.source_url || '',
-            duration_seconds: data.duration_seconds || 0,
-            progress: 0,
-            currentStep: 'transcribing',
-          }]);
+          // Add new processing session only if no duplicate (same sessionId or title+source_url)
+          setProcessingSessions(prev => {
+            const hasMatch = prev.some(
+              s => s.id === data.sessionId ||
+                (s.title === (data.title || '') && s.source_url === (data.source_url || ''))
+            );
+            if (hasMatch) return prev;
+            return [...prev, {
+              id: data.sessionId,
+              title: data.title || 'Processing Session...',
+              source_url: data.source_url || '',
+              duration_seconds: data.duration_seconds || 0,
+              progress: 0,
+              currentStep: 'transcribing',
+            }];
+          });
         }
         
         else if (data.type === 'SESSION_PROGRESS') {
@@ -212,8 +222,8 @@ function App() {
       
       // Fetch from /sessions endpoint (recorded sessions) and /summaries (prism summaries)
       const [sessionsResponse, summariesResponse] = await Promise.all([
-        fetch(`${ADK_API_URL}/sessions?limit=50`).catch(() => ({ ok: false, json: () => ({ sessions: [] }) })),
-        fetch(`${ADK_API_URL}/summaries?limit=50`).catch(() => ({ ok: false, json: () => ({ items: [] }) }))
+        fetch(`${ADK_API_URL}/sessions?limit=200`).catch(() => ({ ok: false, json: () => ({ sessions: [] }) })),
+        fetch(`${ADK_API_URL}/summaries?limit=200`).catch(() => ({ ok: false, json: () => ({ items: [] }) }))
       ]);
 
       const sessionsResult = sessionsResponse.ok ? await sessionsResponse.json() : { sessions: [] };
@@ -412,6 +422,12 @@ function App() {
       }
     };
   }, [connectDashboardWS, loadSessions, loadSummaries, loadDiagrams, loadReels]);
+
+  // Update timings on cards every 60s so "Xm ago" updates without refresh
+  useEffect(() => {
+    const id = setInterval(() => setTimeTick(Date.now()), 60000);
+    return () => clearInterval(id);
+  }, []);
 
   // WebSocket connection for live avatar updates
   const connectAvatarWS = useCallback(() => {
@@ -820,6 +836,8 @@ function App() {
                   <span className="session-count">
                     {filteredSessions.length + processingSessions.length} sessions
                   </span>
+                  {/* timeTick triggers re-render so formatDate "Xm ago" updates every 60s */}
+                  <span aria-hidden="true" style={{ display: 'none' }}>{timeTick}</span>
                 </div>
                 
                 {loading && processingSessions.length === 0 && filteredSessions.length === 0 ? (
