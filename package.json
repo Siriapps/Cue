@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "description": "cue - AI Meeting Summarizer with Veo 3 Video Generation",
   "scripts": {
-    "build": "webpack --config extension/config/webpack.config.js --mode production",
-    "dev": "webpack --config extension/config/webpack.config.js --mode development --watch",
+    "build": "npm run build:extension",
+    "dev": "cd extension && npm run build",
     "clean": "rimraf dist",
     "start:api": "cd server && python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000",
     "start:dashboard": "cd cue && npm start",
