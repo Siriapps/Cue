@@ -3,8 +3,21 @@
   "name": "cue - AI Workspace",
   "version": "0.0.1",
   "description": "Intent-aware Halo Strip with Go Live and Prism features.",
-  "permissions": ["tabs", "activeTab", "storage", "tabCapture", "offscreen"],
-  "host_permissions": ["<all_urls>", "https://generativelanguage.googleapis.com/*", "http://localhost:8000/*", "http://localhost:3001/*"],
+  "permissions": ["tabs", "activeTab", "storage", "tabCapture", "offscreen", "identity"],
+  "host_permissions": ["<all_urls>", "https://generativelanguage.googleapis.com/*", "http://localhost:8000/*", "http://localhost:3001/*", "https://accounts.google.com/*", "https://www.googleapis.com/*"],
+  "oauth2": {
+    "client_id": "844899909230-fvjge00410ai2k1aqvp5sj76k211jf8g.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/userinfo.email",
+      "https://www.googleapis.com/auth/userinfo.profile",
+      "https://www.googleapis.com/auth/gmail.modify",
+      "https://www.googleapis.com/auth/calendar",
+      "https://www.googleapis.com/auth/drive",
+      "https://www.googleapis.com/auth/documents",
+      "https://www.googleapis.com/auth/spreadsheets",
+      "https://www.googleapis.com/auth/tasks"
+    ]
+  },
   "background": {
     "service_worker": "background.js"
   },

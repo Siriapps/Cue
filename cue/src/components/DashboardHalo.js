@@ -3,7 +3,7 @@ import React, { useState } from 'react';
 /**
  * DashboardHalo - Top bar for the dashboard matching the extension halo strip style
  */
-function DashboardHalo() {
+function DashboardHalo({ user }) {
   const [chatOpen, setChatOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [aiAnswer, setAiAnswer] = useState(null);
@@ -27,6 +27,8 @@ function DashboardHalo() {
           page_title: 'cue Dashboard',
           current_url: window.location.href,
           selected_text: '',
+          user_display_name: user?.name ?? '',
+          user_email: user?.email ?? '',
         }),
       });
       const data = await response.json();

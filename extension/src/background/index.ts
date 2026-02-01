@@ -18,6 +18,99 @@ let sessionInfo: {
   startTime: number;
 } | null = null;
 
+// ================== Chrome Identity OAuth ==================
+
+async function loginWithGoogle(): Promise<{ success: boolean; token?: string; error?: string }> {
+  try {
+    const result = await chrome.identity.getAuthToken({ interactive: true });
+    const token: string | undefined =
+      typeof result === "string" ? result : (result as { token?: string })?.token;
+    if (!token) {
+      return { success: false, error: "No token returned" };
+    }
+
+    // Store token in chrome.storage.local for later use
+    await chrome.storage.local.set({
+      googleToken: token,
+      tokenTimestamp: Date.now(),
+    });
+    console.log("[cue] Google token stored in chrome.storage.local");
+
+    return { success: true, token };
+  } catch (error: any) {
+    console.error("[cue] Google login failed:", error);
+    return { success: false, error: error?.message || "Login failed" };
+  }
+}
+
+async function logoutGoogle(): Promise<void> {
+  chrome.identity.clearAllCachedAuthTokens();
+  // Also clear stored token
+  await chrome.storage.local.remove(["googleToken", "tokenTimestamp"]);
+  console.log("[cue] Google logout: tokens cleared");
+}
+
+// Check if user is logged in
+async function isLoggedIn(): Promise<boolean> {
+  const stored = await chrome.storage.local.get(["googleToken"]);
+  return !!stored.googleToken;
+}
+
+// ================== Tab Trajectory (Predictive Memory) ==================
+
+const TAB_TRAJECTORY_MAX = 10;
+type TabTrajectoryItem = { url: string; title: string; timestamp: number; timeOnPage?: number };
+let tabTrajectory: TabTrajectoryItem[] = [];
+let tabTrajectoryTimers: Record<number, ReturnType<typeof setTimeout>> = {};
+const TRAJECTORY_PAUSE_MS = 30000;
+
+function pushTabTrajectory(url: string, title: string, tabId?: number) {
+  const now = Date.now();
+  if (tabTrajectory.length > 0 && tabTrajectory[tabTrajectory.length - 1].url === url) return;
+  tabTrajectory.push({ url, title, timestamp: now });
+  if (tabTrajectory.length > TAB_TRAJECTORY_MAX) tabTrajectory.shift();
+  if (tabId != null) {
+    if (tabTrajectoryTimers[tabId]) clearTimeout(tabTrajectoryTimers[tabId]);
+    tabTrajectoryTimers[tabId] = setTimeout(() => {
+      analyzeTrajectory(url);
+      delete tabTrajectoryTimers[tabId];
+    }, TRAJECTORY_PAUSE_MS);
+  }
+}
+
+async function analyzeTrajectory(currentUrl: string) {
+  try {
+    const res = await fetch(`${API_BASE}/analyze_trajectory`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ trajectory: tabTrajectory, current_url: currentUrl }),
+    });
+    const data = await res.json();
+    const prediction = data?.prediction;
+    if (prediction?.next_step && (prediction?.confidence ?? 0) >= 0.8) {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (tab?.id) {
+        chrome.tabs.sendMessage(tab.id, {
+          type: "PREDICTIVE_NUDGE",
+          payload: {
+            next_step: prediction.next_step,
+            mcp_tool: prediction.mcp_tool,
+            reasoning: prediction.reasoning,
+          },
+        });
+      }
+    }
+  } catch (e) {
+    console.warn("[cue] analyze_trajectory failed:", e);
+  }
+}
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === "complete" && tab.url && !tab.url.startsWith("chrome://")) {
+    pushTabTrajectory(tab.url, tab.title || "", tabId);
+  }
+});
+
 // Session Audio Capture is now handled directly in content script (session_recorder.ts)
 // using navigator.mediaDevices.getUserMedia() - no offscreen documents needed!
 
@@ -227,7 +320,14 @@ function connectPuppeteerSocket(): Promise<WebSocket> {
 async function sendChunkViaWebSocket(blob: Blob, mimeType: string) {
   try {
     const audio_base64 = await blobToBase64(blob);
+    await sendChunkBase64(audio_base64, mimeType);
+  } catch (error) {
+    console.error("Failed to send audio chunk:", error);
+  }
+}
 
+async function sendChunkBase64(audio_base64: string, mimeType: string): Promise<void> {
+  try {
     if (puppeteerSocket?.readyState === WebSocket.OPEN) {
       puppeteerSocket.send(JSON.stringify({
         type: "audio_chunk",
@@ -268,6 +368,51 @@ async function startGoLiveCapture() {
     console.warn("Could not establish WebSocket, will use HTTP fallback:", error);
   }
 
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) {
+    throw new Error("No active tab");
+  }
+
+  try {
+    const streamId = await new Promise<string>((resolve, reject) => {
+      chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id! }, (id) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError?.message || "getMediaStreamId failed"));
+        } else {
+          resolve(id);
+        }
+      });
+    });
+
+    await chrome.offscreen.createDocument({
+      url: "offscreen.html",
+      reasons: [chrome.offscreen.Reason.USER_MEDIA],
+      justification: "Tab audio capture for Go Live",
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      setTimeout(() => {
+        chrome.runtime.sendMessage(
+          { target: "offscreen", type: "START_CAPTURE", streamId, includeMic: false },
+          (r) => {
+            if (chrome.runtime.lastError) {
+              reject(new Error(chrome.runtime.lastError?.message));
+            } else if (r?.success) {
+              resolve();
+            } else {
+              reject(new Error(r?.error || "START_CAPTURE failed"));
+            }
+          }
+        );
+      }, 150);
+    });
+
+    chrome.tabs.sendMessage(tab.id, { type: "GO_LIVE_STARTED" });
+    return;
+  } catch (offscreenError) {
+    console.warn("[cue] Offscreen capture failed, falling back to tabCapture.capture:", offscreenError);
+  }
+
   return new Promise<void>((resolve, reject) => {
     chrome.tabCapture.capture({ audio: true, video: false }, (stream) => {
       if (chrome.runtime.lastError || !stream) {
@@ -292,10 +437,8 @@ async function startGoLiveCapture() {
 
       mediaRecorder.start(CHUNK_MS);
 
-      chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
-        if (tab?.id) {
-          chrome.tabs.sendMessage(tab.id, { type: "GO_LIVE_STARTED" });
-        }
+      chrome.tabs.query({ active: true, currentWindow: true }).then(([t]) => {
+        if (t?.id) chrome.tabs.sendMessage(t.id, { type: "GO_LIVE_STARTED" });
       });
 
       resolve();
@@ -303,7 +446,7 @@ async function startGoLiveCapture() {
   });
 }
 
-function stopGoLiveCapture() {
+async function stopGoLiveCapture() {
   if (mediaRecorder && mediaRecorder.state !== "inactive") {
     mediaRecorder.stop();
   }
@@ -312,6 +455,17 @@ function stopGoLiveCapture() {
     recordingStream = null;
   }
   mediaRecorder = null;
+
+  try {
+    const hasOffscreen = await chrome.offscreen.hasDocument();
+    if (hasOffscreen) {
+      chrome.runtime.sendMessage({ target: "offscreen", type: "STOP_CAPTURE" }, () => {
+        chrome.offscreen.closeDocument();
+      });
+    }
+  } catch {
+    // ignore
+  }
 
   if (puppeteerSocket) {
     puppeteerSocket.close();
@@ -340,29 +494,115 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true; // Indicates we will send a response asynchronously
   }
 
-  // Ask AI
+  // Ask AI (with @mention command support)
   if (message.type === "ASK_AI") {
     (async () => {
       try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        const context = {
-          query: message.query,
-          page_title: tab?.title || "",
-          current_url: tab?.url || "",
-          selected_text: message.selectedText || "",
-        };
+        const query = message.query || "";
 
-        const response = await fetch(`${API_BASE}/ask_ai`, {
+        // Check for @mention commands (@gmail, @calendar, @tasks, @docs, @drive, @sheets)
+        const mentionMatch = query.match(/^@(gmail|calendar|tasks|docs|drive|sheets)\s+(.+)/i);
+
+        if (mentionMatch) {
+          // Route to /execute_command endpoint
+          const service = mentionMatch[1].toLowerCase();
+          const command = mentionMatch[2];
+
+          // Get stored token for authentication
+          const stored = await chrome.storage.local.get(["googleToken"]);
+          const userToken = stored.googleToken || "";
+
+          const response = await fetch(`${API_BASE}/execute_command`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              service,
+              command,
+              user_token: userToken,
+              confirm: message.confirm || false, // Preview by default
+              page_title: tab?.title ?? "",
+              current_url: tab?.url ?? "",
+              selected_text: message.selectedText ?? "",
+              user_display_name: message.userDisplayName ?? "",
+              user_email: message.userEmail ?? "",
+            }),
+          });
+          const data = await response.json();
+
+          // Send response with command-specific type
+          const responseData = {
+            ...data,
+            type: "command",
+            service,
+            original_query: query,
+          };
+
+          sendResponse(responseData);
+
+          if (tab?.id) {
+            chrome.tabs.sendMessage(tab.id, { type: "COMMAND_RESULT", payload: responseData });
+          }
+        } else {
+          // Regular Ask AI request
+          const context = {
+            query,
+            page_title: tab?.title ?? "",
+            current_url: tab?.url ?? "",
+            selected_text: message.selectedText ?? "",
+            user_display_name: message.userDisplayName ?? "",
+            user_email: message.userEmail ?? "",
+          };
+
+          const response = await fetch(`${API_BASE}/ask_ai`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(context),
+          });
+          const data = await response.json();
+
+          sendResponse(data);
+
+          if (tab?.id) {
+            chrome.tabs.sendMessage(tab.id, { type: "AI_ANSWER", payload: data });
+          }
+        }
+      } catch (error: any) {
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    return true;
+  }
+
+  // Execute confirmed command
+  if (message.type === "EXECUTE_COMMAND") {
+    (async () => {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        const stored = await chrome.storage.local.get(["googleToken"]);
+        const userToken = stored.googleToken || "";
+
+        const response = await fetch(`${API_BASE}/execute_command`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(context),
+          body: JSON.stringify({
+            service: message.service,
+            command: message.command,
+            user_token: userToken,
+            confirm: true, // Execute for real
+            page_title: tab?.title ?? message.pageTitle ?? "",
+            current_url: tab?.url ?? message.currentUrl ?? "",
+            selected_text: message.selectedText ?? "",
+            user_display_name: message.userDisplayName ?? "",
+            user_email: message.userEmail ?? "",
+          }),
         });
         const data = await response.json();
 
         sendResponse(data);
 
         if (tab?.id) {
-          chrome.tabs.sendMessage(tab.id, { type: "AI_ANSWER", payload: data });
+          chrome.tabs.sendMessage(tab.id, { type: "COMMAND_EXECUTED", payload: data });
         }
       } catch (error: any) {
         sendResponse({ success: false, error: error.message });
@@ -432,5 +672,33 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     stopGoLiveCapture();
     sendResponse({ status: "ok" });
     return;
+  }
+
+  if (message.type === "AUDIO_CHUNK") {
+    sendChunkBase64(message.chunk, message.mimeType || "audio/webm").then(() => sendResponse({ ok: true }));
+    return true;
+  }
+
+  // Google OAuth
+  if (message.type === "GOOGLE_LOGIN") {
+    loginWithGoogle()
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ success: false, error: error?.message }));
+    return true;
+  }
+
+  if (message.type === "GOOGLE_LOGOUT") {
+    logoutGoogle()
+      .then(() => sendResponse({ success: true }))
+      .catch((error) => sendResponse({ success: false, error: error?.message }));
+    return true;
+  }
+
+  // Check login status
+  if (message.type === "CHECK_LOGIN") {
+    isLoggedIn()
+      .then((loggedIn) => sendResponse({ loggedIn }))
+      .catch(() => sendResponse({ loggedIn: false }));
+    return true;
   }
 });

@@ -11,6 +11,9 @@ from google import genai
 
 logger = logging.getLogger(__name__)
 
+# Public API: call_gemini and generate_content (alias) for text; video helpers for Veo
+__all__ = ["call_gemini", "generate_content", "generate_video_from_summary", "generate_video_from_summary_sync"]
+
 # API call counter for tracking
 _api_call_count = 0
 
@@ -23,14 +26,21 @@ BASE_DELAY_SECONDS = 10
 MIN_DELAY_BETWEEN_CALLS = 10
 
 
+# Fallback models if env model fails (e.g. not yet available)
+FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-2.5-pro"]
+
+
 def _get_model() -> str:
+    """Use GEMINI_MODEL from env; if unset, default to gemini-2.5-flash."""
     configured = os.getenv("GEMINI_MODEL", "").strip()
-    allowed = {"gemini-2.5-flash", "gemini-2.5-pro"}
-    # Force valid model - if not in allowed set, use default
-    if configured and configured in allowed:
+    if configured:
         return configured
-    # Always default to gemini-2.5-flash (never use 1.5)
     return "gemini-2.5-flash"
+
+
+def _model_from_env() -> bool:
+    """True if GEMINI_MODEL is explicitly set in .env (no fallback in that case)."""
+    return bool(os.getenv("GEMINI_MODEL", "").strip())
 
 
 def _get_api_key() -> str:
@@ -45,6 +55,14 @@ def call_gemini(
     system_prompt: Optional[str] = None,
     response_mime_type: str = "application/json",
 ) -> Dict[str, Any]:
+    # #region agent log
+    try:
+        _log_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), ".cursor", "debug.log")
+        with open(_log_path, "a", encoding="utf-8") as _f:
+            _f.write('{"location":"gemini_client.py:call_gemini","message":"call_gemini invoked","data":{"parts_len":%d},"timestamp":%d,"sessionId":"debug-session","hypothesisId":"H4"}\n' % (len(parts), int(time.time() * 1000)))
+    except Exception:
+        pass
+    # #endregion
     global _api_call_count
     _api_call_count += 1
     
@@ -57,13 +75,9 @@ def call_gemini(
     
     api_key = _get_api_key()
     model = _get_model()
-    # Ensure we're using gemini-2.5-flash, never 1.5
-    if "1.5" in model or model not in {"gemini-2.5-flash", "gemini-2.5-pro"}:
-        model = "gemini-2.5-flash"
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     )
-
     payload: Dict[str, Any] = {
         "contents": [{"role": "user", "parts": parts}],
         "generationConfig": {"responseMimeType": response_mime_type},
@@ -74,9 +88,45 @@ def call_gemini(
             "parts": [{"text": system_prompt}],
         }
 
-    response = requests.post(url, params={"key": api_key}, json=payload, timeout=90)
-    response.raise_for_status()
-    data = response.json()
+    # Only allow fallback when no model is declared in .env; if GEMINI_MODEL is set, use it only (no fallback on 429 or any error).
+    if _model_from_env():
+        models_to_try = [model]
+    else:
+        models_to_try = [model] + [m for m in FALLBACK_MODELS if m != model]
+    last_error: Optional[Exception] = None
+    data: Optional[Dict[str, Any]] = None
+
+    for try_model in models_to_try:
+        try_url = f"https://generativelanguage.googleapis.com/v1beta/models/{try_model}:generateContent"
+        try:
+            response = requests.post(try_url, params={"key": api_key}, json=payload, timeout=90)
+            response.raise_for_status()
+            data = response.json()
+            break
+        except requests.RequestException as e:
+            last_error = e
+            err_msg = str(e).lower()
+            err_body = ""
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if hasattr(e, "response") and e.response is not None:
+                try:
+                    err_body = (e.response.text or "").lower()
+                except Exception:
+                    pass
+            # Only fallback on model-not-available (404). Never fallback on 429 (rate limit).
+            if try_model == models_to_try[-1]:
+                raise
+            if status == 429:
+                raise  # Rate limit: do not try another model
+            is_model_not_found = status == 404 or (status == 400 and ("not found" in err_body or "invalid" in err_body or "unknown" in err_body))
+            if not is_model_not_found:
+                raise
+            if try_model != model:
+                logger.warning(f"[Gemini] Model {try_model} unavailable, trying fallback")
+            continue
+
+    if data is None:
+        raise last_error or RuntimeError("No response from Gemini")
 
     candidates = data.get("candidates", [])
     if not candidates:
@@ -90,6 +140,10 @@ def call_gemini(
         return json.loads(text)
     except json.JSONDecodeError:
         return {"raw_text": text}
+
+
+# Alias for callers that expect the old name (e.g. generate_content)
+generate_content = call_gemini
 
 
 # ================== Video generation (Veo via Gemini API) ==================

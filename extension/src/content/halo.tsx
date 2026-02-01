@@ -15,6 +15,17 @@ export function HaloStrip(): React.JSX.Element {
   const [aiAnswer, setAiAnswer] = useState<string | null>(null);
   const [isThinking, setIsThinking] = useState(false);
 
+  // Login state
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+
+  // Command state (for @mention commands)
+  const [commandPreview, setCommandPreview] = useState<{
+    service: string;
+    action: string;
+    params: Record<string, unknown>;
+    original_query: string;
+  } | null>(null);
+
   // Session Recording State
   const [sessionState, setSessionState] = useState<SessionState>("idle");
   const [sessionStartTime, setSessionStartTime] = useState<number | null>(null);
@@ -23,6 +34,67 @@ export function HaloStrip(): React.JSX.Element {
 
   // Go Live State
   const [isLive, setIsLive] = useState(false);
+
+  // Predictive nudge (from Router/Predictor)
+  const [predictiveNudge, setPredictiveNudge] = useState<{
+    next_step: string;
+    mcp_tool?: string;
+    reasoning?: string;
+  } | null>(null);
+
+  // Check login status on mount
+  useEffect(() => {
+    try {
+      if (!chrome?.runtime?.id) return;
+      chrome.runtime.sendMessage({ type: "CHECK_LOGIN" }, (response) => {
+        if (chrome.runtime.lastError) return;
+        setIsLoggedIn(response?.loggedIn || false);
+      });
+    } catch {
+      // Extension context invalidated
+    }
+  }, []);
+
+  // Listen for PREDICTIVE_NUDGE and COMMAND_RESULT from background
+  useEffect(() => {
+    const listener = (message: { type?: string; payload?: unknown }) => {
+      if (message.type === "PREDICTIVE_NUDGE" && message.payload) {
+        const p = message.payload as { next_step?: string; mcp_tool?: string; reasoning?: string };
+        if (p.next_step) setPredictiveNudge(p);
+      }
+      if (message.type === "COMMAND_RESULT" && message.payload) {
+        const p = message.payload as {
+          preview?: boolean;
+          service?: string;
+          action?: string;
+          params?: Record<string, unknown>;
+          original_query?: string;
+          error?: string;
+        };
+        if (p.preview && p.service && p.action) {
+          setCommandPreview({
+            service: p.service,
+            action: p.action,
+            params: p.params || {},
+            original_query: p.original_query || "",
+          });
+          setIsThinking(false);
+        }
+      }
+      if (message.type === "COMMAND_EXECUTED" && message.payload) {
+        const p = message.payload as { success?: boolean; message?: string; error?: string };
+        if (p.success) {
+          setAiAnswer(`Done: ${p.message || "Command executed"}`);
+        } else {
+          setAiAnswer(`Error: ${p.error || "Command failed"}`);
+        }
+        setCommandPreview(null);
+        setIsThinking(false);
+      }
+    };
+    chrome.runtime.onMessage.addListener(listener);
+    return () => chrome.runtime.onMessage.removeListener(listener);
+  }, []);
 
   // Load collapsed state from storage
   useEffect(() => {
@@ -139,6 +211,7 @@ export function HaloStrip(): React.JSX.Element {
     setQuery("");
     setIsThinking(true);
     setAiAnswer(null);
+    setCommandPreview(null);
 
     const selectedText = window.getSelection()?.toString() || "";
 
@@ -153,15 +226,30 @@ export function HaloStrip(): React.JSX.Element {
           selectedText: selectedText.substring(0, 500),
         },
         (response) => {
-          setIsThinking(false);
           if (chrome.runtime.lastError) {
+            setIsThinking(false);
             console.error("[cue] Failed to ask AI:", chrome.runtime.lastError.message);
             setAiAnswer("Extension context invalidated. Please reload the page.");
             return;
           }
-          if (response?.success && response?.answer) {
+
+          // Check if this is a command response (preview)
+          if (response?.type === "command" && response?.preview) {
+            setCommandPreview({
+              service: response.service,
+              action: response.action,
+              params: response.params || {},
+              original_query: response.original_query || currentQuery,
+            });
+            setIsThinking(false);
+          } else if (response?.type === "command" && response?.error) {
+            setIsThinking(false);
+            setAiAnswer(response.error);
+          } else if (response?.success && response?.answer) {
+            setIsThinking(false);
             setAiAnswer(response.answer);
           } else {
+            setIsThinking(false);
             setAiAnswer(response?.error || "Failed to get AI response");
           }
         }
@@ -170,6 +258,63 @@ export function HaloStrip(): React.JSX.Element {
       console.error("[cue] Extension context invalidated:", error.message);
       setIsThinking(false);
       setAiAnswer("Extension context invalidated. Please reload the page.");
+    }
+  };
+
+  // Confirm and execute command
+  const handleConfirmCommand = () => {
+    if (!commandPreview) return;
+    setIsThinking(true);
+
+    try {
+      if (!chrome?.runtime?.id) {
+        throw new Error("Extension context invalidated");
+      }
+      chrome.runtime.sendMessage(
+        {
+          type: "EXECUTE_COMMAND",
+          service: commandPreview.service,
+          command: commandPreview.original_query.replace(/^@\w+\s+/, ""),
+        },
+        (response) => {
+          setIsThinking(false);
+          if (chrome.runtime.lastError) {
+            setAiAnswer("Failed to execute command.");
+            setCommandPreview(null);
+            return;
+          }
+          if (response?.success) {
+            setAiAnswer(`Done: ${response.message || "Command executed"}`);
+          } else {
+            setAiAnswer(`Error: ${response?.error || "Command failed"}`);
+          }
+          setCommandPreview(null);
+        }
+      );
+    } catch {
+      setIsThinking(false);
+      setAiAnswer("Extension context invalidated.");
+      setCommandPreview(null);
+    }
+  };
+
+  // Cancel command preview
+  const handleCancelCommand = () => {
+    setCommandPreview(null);
+  };
+
+  // Handle login
+  const handleLogin = () => {
+    try {
+      if (!chrome?.runtime?.id) return;
+      chrome.runtime.sendMessage({ type: "GOOGLE_LOGIN" }, (response) => {
+        if (chrome.runtime.lastError) return;
+        if (response?.success) {
+          setIsLoggedIn(true);
+        }
+      });
+    } catch {
+      // Extension context invalidated
     }
   };
 
@@ -489,6 +634,16 @@ export function HaloStrip(): React.JSX.Element {
           </svg>
           <span>Library</span>
         </button>
+
+        {/* Predictive Nudge */}
+        {predictiveNudge && (
+          <div className="halo-nudge">
+            <div className="halo-nudge-text">{predictiveNudge.next_step}</div>
+            <div className="halo-nudge-actions">
+              <button type="button" className="halo-nudge-btn" onClick={() => setPredictiveNudge(null)}>Dismiss</button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Minimize Button - Right Side */}
@@ -503,15 +658,32 @@ export function HaloStrip(): React.JSX.Element {
         <div className="halo-chat">
           <div className="halo-chat-header">
             <span>Ask AI</span>
-            <button className="halo-close" onClick={toggleChat}>×</button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              {!isLoggedIn && (
+                <button
+                  className="halo-btn"
+                  onClick={handleLogin}
+                  style={{ fontSize: '11px', padding: '4px 8px' }}
+                >
+                  Sign in
+                </button>
+              )}
+              <button className="halo-close" onClick={toggleChat}>×</button>
+            </div>
           </div>
+
+          {/* Command hints */}
+          <div style={{ fontSize: '11px', color: '#71717a', marginBottom: '8px' }}>
+            Try: @gmail draft... | @calendar create... | @tasks add...
+          </div>
+
           <input
             className="halo-input"
             placeholder={placeholder}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
-              e.stopPropagation(); // Prevent YouTube/page from capturing keys
+              e.stopPropagation();
               if (e.key === "Enter") handleAsk();
             }}
             onKeyUp={(e) => e.stopPropagation()}
@@ -524,6 +696,56 @@ export function HaloStrip(): React.JSX.Element {
               Send
             </button>
           </div>
+
+          {/* Command Preview */}
+          {commandPreview && !isThinking && (
+            <div className="halo-answer halo-answer-command" style={{ borderLeft: '3px solid #8b5cf6' }}>
+              <div style={{ fontSize: '12px', color: '#5b21b6', marginBottom: '8px', fontWeight: 600 }}>
+                @{commandPreview.service} - {commandPreview.action}
+              </div>
+              <div className="halo-answer-text" style={{ fontSize: '13px', marginBottom: '12px', color: '#1a1a2e' }}>
+                {commandPreview.action === 'draft' && commandPreview.params.to && (
+                  <>
+                    <div><strong>To:</strong> {String(commandPreview.params.to)}</div>
+                    <div><strong>Subject:</strong> {String(commandPreview.params.subject || '')}</div>
+                    <div style={{ marginTop: '4px', whiteSpace: 'pre-wrap' }}>{String(commandPreview.params.body || '')}</div>
+                  </>
+                )}
+                {commandPreview.action === 'create' && (
+                  <>
+                    <div><strong>Title:</strong> {String(commandPreview.params.title || commandPreview.params.summary || '')}</div>
+                    {commandPreview.params.description && <div style={{ marginTop: '4px', whiteSpace: 'pre-wrap' }}>{String(commandPreview.params.description)}</div>}
+                    {commandPreview.params.date && <div><strong>Date:</strong> {String(commandPreview.params.date)}</div>}
+                    {commandPreview.params.time && <div><strong>Time:</strong> {String(commandPreview.params.time)}</div>}
+                  </>
+                )}
+                {commandPreview.action === 'add' && (
+                  <>
+                    <div><strong>Task:</strong> {String(commandPreview.params.title || '')}</div>
+                    {commandPreview.params.notes && <div style={{ marginTop: '4px', whiteSpace: 'pre-wrap' }}>{String(commandPreview.params.notes)}</div>}
+                    {commandPreview.params.due && <div><strong>Due:</strong> {String(commandPreview.params.due)}</div>}
+                  </>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  className="halo-btn send-btn"
+                  onClick={handleConfirmCommand}
+                  style={{ flex: 1 }}
+                >
+                  Confirm & Execute
+                </button>
+                <button
+                  className="halo-btn cancel-btn"
+                  onClick={handleCancelCommand}
+                  style={{ flex: 1, background: '#27272a', color: '#fafafa' }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
           {isThinking && (
             <div className="halo-answer">
               <div className="halo-thinking">
@@ -534,7 +756,7 @@ export function HaloStrip(): React.JSX.Element {
               </div>
             </div>
           )}
-          {aiAnswer && !isThinking && (
+          {aiAnswer && !isThinking && !commandPreview && (
             <div className="halo-answer">
               <div className="halo-answer-text">{aiAnswer}</div>
             </div>

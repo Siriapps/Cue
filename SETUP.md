@@ -2,6 +2,29 @@
 
 This guide gets the API, dashboard, and Chrome extension set up and verifies that everything works.
 
+---
+
+## What you need on your end (keys & setup)
+
+| What | Where to get it | Where to put it |
+|------|-----------------|-----------------|
+| **Gemini API key** | [Google AI Studio](https://aistudio.google.com/apikey) → Create API key | `server/.env` as `GEMINI_API_KEY=...` |
+| **MongoDB connection string** | [MongoDB Atlas](https://www.mongodb.com/cloud/atlas) → Create cluster → Connect → “Drivers” → copy URI | `server/.env` as `MONGODB_URI=...` |
+
+**Required for the app to run:** create a file **`server/.env`** with at least:
+
+```
+GEMINI_API_KEY=your-gemini-api-key
+MONGODB_URI=mongodb+srv://user:password@cluster.mongodb.net/?retryWrites=true&w=majority
+```
+
+- **Optional:** `GEMINI_MODEL=gemini-2.5-flash` (default if omitted).
+- **Optional (auth/Google login):** Supabase URL and anon key in `server/.env` and `cue/.env.local`; see Phase 1 auth in the roadmap if you add Landing/Login.
+
+Nothing else is required to run recording, transcription, summary, and the library. After that, run the API and dashboard (see RUN.md).
+
+---
+
 ## Prerequisites
 
 - **Node.js 18+**

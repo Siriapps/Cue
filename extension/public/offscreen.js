@@ -29,10 +29,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'STOP_CAPTURE') {
     console.log('[cue offscreen] Stopping capture');
-    stopCapture()
-      .then(audioBase64 => {
-        console.log('[cue offscreen] Capture stopped, audio size:', audioBase64.length, 'base64 chars');
-        sendResponse({ success: true, audioBase64, mimeType: 'audio/webm' });
+    stopCaptureOnly()
+      .then(() => {
+        sendResponse({ success: true });
       })
       .catch(err => {
         console.error('[cue offscreen] Stop capture failed:', err);
@@ -116,7 +115,18 @@ async function startCapture(streamId, includeMic) {
   mediaRecorder.ondataavailable = (event) => {
     if (event.data && event.data.size > 0) {
       audioChunks.push(event.data);
-      console.log('[cue offscreen] Audio chunk received, size:', event.data.size);
+      const mimeType = mediaRecorder?.mimeType || 'audio/webm';
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const dataUrl = reader.result;
+        const base64 = dataUrl.split(',')[1] || '';
+        chrome.runtime.sendMessage({ type: 'AUDIO_CHUNK', chunk: base64, mimeType }, () => {
+          if (chrome.runtime.lastError) {
+            console.warn('[cue offscreen] Failed to send chunk:', chrome.runtime.lastError.message);
+          }
+        });
+      };
+      reader.readAsDataURL(event.data);
     }
   };
 
@@ -124,9 +134,34 @@ async function startCapture(streamId, includeMic) {
     console.error('[cue offscreen] MediaRecorder error:', event.error);
   };
 
-  // Record in 10-second chunks
-  mediaRecorder.start(10000);
+  // Record in 5-second chunks (matches Go Live CHUNK_MS)
+  mediaRecorder.start(5000);
   console.log('[cue offscreen] MediaRecorder started');
+}
+
+function stopCaptureOnly() {
+  return new Promise((resolve) => {
+    if (!mediaRecorder) {
+      resolve();
+      return;
+    }
+    mediaRecorder.onstop = () => {
+      streams.forEach(s => s.getTracks().forEach(t => t.stop()));
+      streams = [];
+      if (audioContext) {
+        audioContext.close();
+        audioContext = null;
+      }
+      mediaRecorder = null;
+      audioChunks = [];
+      resolve();
+    };
+    if (mediaRecorder.state !== 'inactive') {
+      mediaRecorder.stop();
+    } else {
+      resolve();
+    }
+  });
 }
 
 async function stopCapture() {

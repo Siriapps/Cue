@@ -32,6 +32,43 @@
   gap: 8px;
 }
 
+/* Predictive Nudge */
+.halo-nudge {
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: rgba(139, 92, 246, 0.12);
+  border: 1px solid rgba(139, 92, 246, 0.3);
+  box-shadow: 0 0 20px rgba(139, 92, 246, 0.2);
+  animation: glow 2s ease-in-out infinite;
+  max-width: 240px;
+}
+.halo-nudge-text {
+  font-size: 13px;
+  color: #1a1a2e;
+  margin-bottom: 6px;
+}
+.halo-nudge-actions {
+  display: flex;
+  gap: 6px;
+}
+.halo-nudge-btn {
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: none;
+  background: rgba(139, 92, 246, 0.2);
+  color: #5b21b6;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.halo-nudge-btn:hover {
+  background: rgba(139, 92, 246, 0.3);
+}
+@keyframes glow {
+  0%, 100% { box-shadow: 0 0 20px rgba(139, 92, 246, 0.2); }
+  50% { box-shadow: 0 0 28px rgba(139, 92, 246, 0.35); }
+}
+
 /* Collapsed State - Floating icon */
 .halo-collapsed {
   pointer-events: auto;
@@ -426,12 +463,35 @@
   box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
 }
 
-/* Answer Display */
+.halo-btn.cancel-btn {
+  color: #fafafa !important;
+  background: #27272a !important;
+}
+
+.halo-btn.cancel-btn:hover {
+  color: #fafafa !important;
+  background: #3f3f46 !important;
+}
+
+/* Ensure Cancel stays readable when nested in chat */
+.halo-chat .halo-btn.cancel-btn {
+  color: #fafafa !important;
+}
+
+/* Answer Display - light background so dark text is readable; scrollable if tall */
 .halo-answer {
   padding: 12px;
-  background: rgba(255, 255, 255, 0.5);
-  border: 1px solid rgba(0, 0, 0, 0.05);
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(0, 0, 0, 0.08);
   border-radius: 14px;
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+/* Force high-contrast text in command/AI response so labels and content are visible */
+.halo-answer .halo-answer-text,
+.halo-answer-command .halo-answer-text {
+  color: #1a1a2e !important;
 }
 
 .halo-thinking {
@@ -439,7 +499,7 @@
   align-items: center;
   gap: 4px;
   font-size: 13px;
-  color: #6b7280;
+  color: #4b5563;
   font-style: italic;
 }
 
@@ -462,7 +522,7 @@
 
 .halo-answer-text {
   font-size: 14px;
-  color: #374151;
+  color: #1a1a2e;
   line-height: 1.6;
   white-space: pre-wrap;
   word-wrap: break-word;
@@ -556,11 +616,11 @@
   }
 
   .halo-answer {
-    background: rgba(0, 0, 0, 0.2);
-    border-color: rgba(255, 255, 255, 0.05);
+    background: rgba(255, 255, 255, 0.96);
+    border-color: rgba(0, 0, 0, 0.08);
   }
 
   .halo-answer-text {
-    color: #e5e7eb;
+    color: #1a1a2e;
   }
 }

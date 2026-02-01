@@ -4,30 +4,52 @@ import asyncio
 from typing import Any, Dict, List, Optional, Set
 from datetime import datetime
 
-from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from fastapi.exceptions import RequestValidationError
-from pydantic import BaseModel
+from dotenv import load_dotenv  # type: ignore[import-untyped]
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request  # type: ignore[import-untyped]
+from fastapi.middleware.cors import CORSMiddleware  # type: ignore[import-untyped]
+from fastapi.responses import JSONResponse  # type: ignore[import-untyped]
+from fastapi.exceptions import RequestValidationError  # type: ignore[import-untyped]
+from pydantic import BaseModel  # type: ignore[import-untyped]
 
-from app.agents.intent import analyze_intent
-from app.agents.prism import summarize_context
-from app.agents.scribe import process_audio_chunk
-from app.agents.ask_ai import ask_ai
-from app.agents.motion import extract_motions, parse_motion_to_animation_hint
-from app.agents.puppeteer import generate_pose_for_motion, generate_pose_sequence, get_preset_pose
-from app.agents.transcriber import transcribe_audio, generate_session_summary
-from app.agents.gemini_client import generate_video_from_summary
+# #region agent log
+try:
+    from app.agents.embeddings import generate_embedding
+    from app.agents.intent import analyze_intent
+    from app.agents.router import classify_intent
+    from app.agents.predictor import predict_next_step
+    from app.agents.implementation import execute_prediction
+    from app.agents.prism import summarize_context
+    from app.agents.scribe import process_audio_chunk
+    from app.agents.ask_ai import ask_ai
+    from app.agents.motion import extract_motions, parse_motion_to_animation_hint
+    from app.agents.puppeteer import generate_pose_for_motion, generate_pose_sequence, get_preset_pose
+    from app.agents.transcriber import transcribe_audio, generate_session_summary
+    from app.agents.gemini_client import generate_video_from_summary
+except ImportError as e:
+    import traceback
+    import json as _json
+    import time as _time
+    _log_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".cursor", "debug.log")
+    try:
+        _entry = {"location": "main.py:imports", "message": "ImportError on agent imports", "data": {"error": str(e), "traceback": traceback.format_exc()}, "timestamp": int(_time.time() * 1000), "sessionId": "debug-session", "hypothesisId": "H1"}
+        with open(_log_path, "a", encoding="utf-8") as _f:
+            _f.write(_json.dumps(_entry, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+    raise
+# #endregion
 from app.db.repository import (
     save_context_event,
     save_diagram_event,
     save_prism_summary,
     save_session,
+    save_user,
     list_recent,
     list_sessions,
     update_session,
     get_session_by_id,
+    list_google_activity,
+    list_google_activity_recent,
 )
 
 load_dotenv()
@@ -116,6 +138,21 @@ class DashboardConnectionManager:
 dashboard_manager = DashboardConnectionManager()
 
 
+@app.on_event("startup")
+async def startup_change_stream():
+    """Start MongoDB change stream watcher for sessions (requires replica set)."""
+    try:
+        from app.db.mongo import watch_sessions_collection
+        import asyncio
+        loop = asyncio.get_running_loop()
+        def broadcast(msg):
+            asyncio.run_coroutine_threadsafe(dashboard_manager.broadcast(msg), loop)
+        watch_sessions_collection(broadcast)
+        print("[cue] Change stream watcher started (sessions)")
+    except Exception as e:
+        print(f"[cue] Change stream not started: {e}")
+
+
 # ================== REQUEST MODELS ==================
 
 class AnalyzeContextRequest(BaseModel):
@@ -144,6 +181,8 @@ class AskAIRequest(BaseModel):
     page_title: Optional[str] = None
     current_url: Optional[str] = None
     selected_text: Optional[str] = None
+    user_display_name: Optional[str] = None
+    user_email: Optional[str] = None
 
 
 class PoseRequest(BaseModel):
@@ -165,6 +204,10 @@ class SessionStartNotify(BaseModel):
     duration_seconds: int
 
 
+class AuthGoogleRequest(BaseModel):
+    access_token: str
+
+
 # ================== BASE ENDPOINTS ==================
 
 @app.get("/")
@@ -172,10 +215,69 @@ async def root() -> Dict[str, Any]:
     return {"status": "ok", "service": "cue ADK API"}
 
 
+@app.post("/auth/google")
+async def auth_google(payload: AuthGoogleRequest) -> Dict[str, Any]:
+    """Verify Google access token and create/update user. Expects token from Chrome identity."""
+    import httpx  # type: ignore[import-untyped]
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                "https://www.googleapis.com/oauth2/v2/userinfo",
+                headers={"Authorization": f"Bearer {payload.access_token}"},
+                timeout=10.0,
+            )
+        if r.status_code != 200:
+            return JSONResponse(
+                status_code=401,
+                content={"success": False, "error": "Invalid or expired token"},
+            )
+        data = r.json()
+        user_data = {
+            "email": data.get("email", ""),
+            "name": data.get("name", ""),
+            "picture": data.get("picture"),
+        }
+        user_id = save_user(user_data)
+        return {"success": True, "user_id": user_id, "email": user_data["email"], "name": user_data["name"], "picture": user_data.get("picture")}
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)},
+        )
+
+
 @app.post("/analyze_context")
 async def analyze_context(payload: AnalyzeContextRequest) -> Dict[str, Any]:
     result = analyze_intent(payload.model_dump())
     save_context_event(payload.model_dump(), result)
+    return result
+
+
+class AnalyzeTrajectoryRequest(BaseModel):
+    trajectory: List[Dict[str, Any]]
+    current_url: str
+
+
+@app.post("/analyze_trajectory")
+async def analyze_trajectory_endpoint(payload: AnalyzeTrajectoryRequest) -> Dict[str, Any]:
+    """Tab trajectory from extension. Router -> Predictor -> optional Implementation; broadcast nudge."""
+    intent_result = classify_intent(payload.trajectory, payload.current_url)
+    prediction = predict_next_step(
+        intent_result["intent"],
+        intent_result["confidence"],
+        payload.trajectory,
+        payload.current_url,
+    )
+    result = {"status": "ok", "intent": intent_result, "prediction": prediction}
+    if prediction.get("next_step") and prediction.get("confidence", 0) >= 0.8:
+        await dashboard_manager.broadcast({
+            "type": "PREDICTIVE_NUDGE",
+            "payload": {
+                "next_step": prediction["next_step"],
+                "mcp_tool": prediction.get("mcp_tool"),
+                "reasoning": prediction.get("reasoning"),
+            },
+        })
     return result
 
 
@@ -219,7 +321,33 @@ async def ask_ai_endpoint(payload: AskAIRequest) -> Dict[str, Any]:
         "page_title": payload.page_title or "",
         "current_url": payload.current_url or "",
         "selected_text": payload.selected_text or "",
+        "user_display_name": payload.user_display_name or "",
+        "user_email": payload.user_email or "",
     }
+    # Optional: include recent Google activity so the model is aware of recent actions
+    try:
+        activities = list_google_activity_recent(limit=10)
+        if activities:
+            lines = []
+            for a in activities[:10]:
+                s = a.get("service", "")
+                act = a.get("action", "")
+                det = a.get("details", {}) or {}
+                if s == "gmail" and act == "send_email":
+                    lines.append(f"sent email: {det.get('subject', 'email')}")
+                elif s == "docs" and act == "create_document":
+                    lines.append(f"created doc: {det.get('title', 'doc')}")
+                elif s == "calendar" and act == "create_event":
+                    lines.append(f"created event: {det.get('summary', 'event')}")
+                elif s == "tasks" and act == "create_task":
+                    lines.append(f"created task: {det.get('title', 'task')}")
+                else:
+                    lines.append(f"{s} {act}")
+            context["recent_activity"] = "; ".join(lines)
+        else:
+            context["recent_activity"] = ""
+    except Exception:
+        context["recent_activity"] = ""
     result = ask_ai(payload.query, context)
     return result
 
@@ -417,7 +545,8 @@ async def save_session_endpoint(payload: SessionSaveRequest) -> Dict[str, Any]:
             "step": "saving_to_db",
         })
 
-        # Prepare session data
+        # Prepare session data (include embedding for vector search)
+        summary_text = (summary.get("tldr") or "") + " " + " ".join(summary.get("key_points") or [])
         session_data = {
             "title": payload.title,
             "source_url": payload.source_url,
@@ -427,6 +556,7 @@ async def save_session_endpoint(payload: SessionSaveRequest) -> Dict[str, Any]:
             "video_url": video_url,
             "has_video": video_url is not None,
             "created_at": datetime.utcnow(),
+            "summary_embedding": generate_embedding(summary_text),
         }
 
         # Broadcast the full session result to dashboard FIRST (immediate display)
@@ -497,7 +627,7 @@ async def save_session_endpoint(payload: SessionSaveRequest) -> Dict[str, Any]:
         })
         
         # Always return JSON, even on error
-        from fastapi.responses import JSONResponse
+        from fastapi.responses import JSONResponse  # type: ignore[import-untyped]
         return JSONResponse(
             status_code=500,
             content={
@@ -587,6 +717,331 @@ async def list_reels(limit: int = 50) -> Dict[str, Any]:
         })
 
     return {"reels": reels}
+
+
+@app.get("/google_activity")
+async def get_google_activity(user_id: str = "", limit: int = 100) -> Dict[str, Any]:
+    """Get recent Google/MCP activity. user_id optional; if empty returns recent (all)."""
+    limit = min(limit, 200)
+    if user_id:
+        activities = list_google_activity(user_id, limit=limit)
+    else:
+        activities = list_google_activity_recent(limit=limit)
+    return {"activities": activities}
+
+
+# ================== COMMAND EXECUTION (@mention) ==================
+
+class CommandRequest(BaseModel):
+    """Request model for @mention commands from Ask AI."""
+    service: str  # gmail, calendar, tasks, docs, drive, sheets
+    command: str  # Natural language command
+    user_token: str = ""  # Google OAuth token
+    confirm: bool = False  # True = execute, False = preview only
+    page_title: Optional[str] = None
+    current_url: Optional[str] = None
+    selected_text: Optional[str] = None
+    user_display_name: Optional[str] = None
+    user_email: Optional[str] = None
+
+
+@app.post("/execute_command")
+async def execute_command(payload: CommandRequest) -> Dict[str, Any]:
+    """
+    Execute an @mention command (e.g., @gmail draft email...).
+
+    If confirm=False, returns a preview of what would happen.
+    If confirm=True, executes the action using MCP tools.
+    """
+    from app.agents.gemini_client import call_gemini
+    from app.db.repository import log_google_activity
+
+    service = payload.service.lower()
+    command = payload.command
+    user_token = payload.user_token
+    confirm = payload.confirm
+
+    # Supported services
+    supported_services = ["gmail", "calendar", "tasks", "docs", "drive", "sheets"]
+    if service not in supported_services:
+        return {
+            "success": False,
+            "error": f"Unknown service: @{service}. Supported: {', '.join(['@' + s for s in supported_services])}"
+        }
+
+    # Build context and recent activity for single agent-style prompt
+    page_title = payload.page_title or ""
+    current_url = payload.current_url or ""
+    selected_text = (payload.selected_text or "")[:500]
+    user_display_name = payload.user_display_name or ""
+    user_email = payload.user_email or ""
+    recent_activity_lines: List[str] = []
+    try:
+        activities = list_google_activity_recent(limit=10)
+        for a in activities[:10]:
+            s = a.get("service", "")
+            act = a.get("action", "")
+            det = a.get("details", {}) or {}
+            if s == "gmail" and act == "send_email":
+                recent_activity_lines.append(f"sent email: {det.get('subject', 'email')}")
+            elif s == "docs" and act == "create_document":
+                recent_activity_lines.append(f"created doc: {det.get('title', 'doc')}")
+            elif s == "calendar" and act == "create_event":
+                recent_activity_lines.append(f"created event: {det.get('summary', 'event')}")
+            elif s == "tasks" and act == "create_task":
+                recent_activity_lines.append(f"created task: {det.get('title', 'task')}")
+            else:
+                recent_activity_lines.append(f"{s} {act}")
+    except Exception:
+        pass
+    recent_activity_str = "; ".join(recent_activity_lines) if recent_activity_lines else "none"
+
+    agent_prompt = f"""You are a smart, productive AI agent. The user is invoking a Google {service} command. Use the context below to decide exactly what to do and produce a complete, ready-to-use result.
+
+Context:
+- Page: {page_title or 'unknown'}
+- URL: {current_url or 'unknown'}
+- Selected text: {selected_text or '(none)'}
+- User name: {user_display_name or '(not provided)'}
+- User email: {user_email or '(not provided)'}
+- Recent Google activity: {recent_activity_str}
+
+User command: {command}
+
+Return a single JSON object with:
+- action: One of (Gmail: "draft", "send", "list", "read"; Calendar: "create", "list", "delete"; Tasks: "add", "list", "complete"; Docs: "create", "read"; Drive: "list", "find"; Sheets: "create", "read").
+- params: An object with ALL fields needed to run the action. Do not use [YOUR NAME] or placeholders for the sender; use the User name above in sign-offs.
+
+For Gmail "draft" or "send": params must include "to", "subject", "body". The body must be a full email: greeting, 1-2 short paragraphs, and a sign-off using the User name (e.g. "Best regards, {{User name}}"). Plain text only.
+For Docs "create": params must include "title", "content" (plain text with \\n for new lines).
+For Tasks "add": params must include "title", optionally "notes", "due".
+For Calendar "create": params must include "title" (or "summary"), "description", and if the user specified time: "date", "time", "start", "end" as appropriate.
+
+Return ONLY the JSON object, no markdown or explanation."""
+
+    try:
+        import json
+        import re
+
+        agent_result = call_gemini(
+            parts=[{"text": agent_prompt}],
+            response_mime_type="application/json",
+        )
+        if isinstance(agent_result, dict) and "error" in agent_result:
+            raise ValueError(agent_result["error"])
+        if isinstance(agent_result, dict):
+            parsed = agent_result
+        else:
+            raw = getattr(agent_result, "raw_text", None) or str(agent_result)
+            json_match = re.search(r'\{[\s\S]*\}', raw)
+            parsed = json.loads(json_match.group()) if json_match else {}
+        action = parsed.get("action", "unknown")
+        params = parsed.get("params", {})
+        if not isinstance(params, dict):
+            params = {}
+    except Exception as parse_err:
+        print(f"[cue] Command agent error: {parse_err}")
+        return {
+            "success": False,
+            "error": f"Could not interpret command: {parse_err}",
+            "hint": "Try being more specific, e.g., '@gmail draft email to user@example.com subject Hello'"
+        }
+
+    # Ensure required fields have fallbacks for preview/execute
+    if service == "gmail" and action == "draft":
+        params.setdefault("to", "")
+        params.setdefault("subject", "")
+        if not (params.get("body") or "").strip():
+            params["body"] = "Please add your message here."
+    if service == "docs" and action == "create":
+        params["title"] = (params.get("title") or params.get("topic") or "Untitled Document").strip()
+        params["content"] = (params.get("content") or "").strip()
+    if service == "tasks" and action == "add":
+        params["title"] = (params.get("title") or params.get("topic") or "New Task").strip()
+        params.setdefault("notes", "")
+    if service == "calendar" and action == "create":
+        params["title"] = (params.get("title") or params.get("summary") or params.get("topic") or "Event").strip()
+        params["summary"] = params.get("summary") or params["title"]
+        params.setdefault("description", "")
+        params.setdefault("date", "")
+        params.setdefault("time", "09:00")
+        params.setdefault("start", "")
+        params.setdefault("end", "")
+
+    # If preview mode, return what would happen
+    if not confirm:
+        preview = {
+            "success": True,
+            "preview": True,
+            "service": service,
+            "action": action,
+            "params": params,
+            "message": f"Ready to {action} via {service.title()}",
+        }
+
+        # Add service-specific preview details
+        if service == "gmail" and action == "draft":
+            preview["draft"] = {
+                "to": params.get("to", ""),
+                "subject": params.get("subject", ""),
+                "body": params.get("body", ""),
+            }
+        elif service == "calendar" and action == "create":
+            preview["event"] = {
+                "title": params.get("title", params.get("summary", "")),
+                "date": params.get("date", ""),
+                "time": params.get("time", params.get("start", "")),
+                "description": params.get("description", ""),
+            }
+        elif service == "tasks" and action == "add":
+            preview["task"] = {
+                "title": params.get("title", ""),
+                "notes": params.get("notes", ""),
+                "due": params.get("due", ""),
+            }
+
+        return preview
+
+    # Execute mode - call MCP tools
+    if not user_token:
+        return {
+            "success": False,
+            "error": "Authentication required. Please sign in with Google first.",
+            "requires_auth": True,
+        }
+
+    result = {"success": False, "error": "Action not implemented"}
+
+    try:
+        if service == "gmail":
+            from app.mcp import gmail_server
+            if action == "draft":
+                # New draft: To/Subject as headers, body as email content only
+                result = gmail_server.create_draft(
+                    user_token=user_token,
+                    to=params.get("to", "").strip(),
+                    subject=params.get("subject", "").strip(),
+                    body=(params.get("body", "") or "").strip(),
+                )
+                result = {"success": True, "message": "Draft created", "result": result}
+            elif action == "send":
+                result = gmail_server.send_email(
+                    user_token=user_token,
+                    to=params.get("to", ""),
+                    subject=params.get("subject", ""),
+                    body=params.get("body", ""),
+                )
+                result = {"success": True, "message": "Email sent", "result": result}
+            elif action == "list":
+                result = gmail_server.list_emails(
+                    user_token=user_token,
+                    query=params.get("query", ""),
+                    max_results=params.get("max_results", 10),
+                )
+                result = {"success": True, "emails": result}
+
+        elif service == "calendar":
+            from app.mcp import calendar_server
+            if action == "create":
+                result = calendar_server.create_event(
+                    user_token=user_token,
+                    summary=params.get("title", params.get("summary", "")),
+                    start=params.get("start", params.get("date", "") + "T" + params.get("time", "09:00:00")),
+                    end=params.get("end", ""),
+                    description=params.get("description", ""),
+                    attendees=params.get("attendees", []),
+                )
+                result = {"success": True, "message": "Event created", "result": result}
+            elif action == "list":
+                result = calendar_server.list_events(
+                    user_token=user_token,
+                    time_min=params.get("time_min", ""),
+                    time_max=params.get("time_max", ""),
+                    max_results=params.get("max_results", 10),
+                )
+                result = {"success": True, "events": result}
+
+        elif service == "tasks":
+            from app.mcp import tasks_server
+            if action == "add":
+                result = tasks_server.create_task(
+                    user_token=user_token,
+                    title=params.get("title", ""),
+                    notes=params.get("notes", ""),
+                    due=params.get("due", ""),
+                )
+                result = {"success": True, "message": "Task created", "result": result}
+            elif action == "list":
+                result = tasks_server.list_tasks(
+                    user_token=user_token,
+                    task_list=params.get("task_list", "@default"),
+                )
+                result = {"success": True, "tasks": result}
+            elif action == "complete":
+                result = tasks_server.complete_task(
+                    user_token=user_token,
+                    task_id=params.get("task_id", ""),
+                )
+                result = {"success": True, "message": "Task completed", "result": result}
+
+        elif service == "docs":
+            from app.mcp import docs_server
+            if action == "create":
+                result = docs_server.create_document(
+                    user_token=user_token,
+                    title=params.get("title", "Untitled Document"),
+                    content=params.get("content", ""),
+                )
+                result = {"success": True, "message": "Document created", "result": result}
+            elif action == "read":
+                result = docs_server.read_document(
+                    user_token=user_token,
+                    doc_id=params.get("doc_id", ""),
+                )
+                result = {"success": True, "document": result}
+
+        elif service == "drive":
+            from app.mcp import drive_server
+            if action == "list" or action == "find":
+                result = drive_server.list_files(
+                    user_token=user_token,
+                    query=params.get("query", ""),
+                    max_results=params.get("max_results", 10),
+                )
+                result = {"success": True, "files": result}
+
+        elif service == "sheets":
+            from app.mcp import sheets_server
+            if action == "create":
+                result = sheets_server.create_sheet(
+                    user_token=user_token,
+                    title=params.get("title", "Untitled Spreadsheet"),
+                )
+                result = {"success": True, "message": "Spreadsheet created", "result": result}
+            elif action == "read":
+                result = sheets_server.read_sheet(
+                    user_token=user_token,
+                    sheet_id=params.get("sheet_id", ""),
+                    range_name=params.get("range", "A1:Z100"),
+                )
+                result = {"success": True, "data": result}
+
+        # Log the activity
+        log_google_activity({
+            "user_id": "",  # Would come from auth in production
+            "service": service,
+            "action": action,
+            "details": {"params": params, "result": "executed" if result.get("success") else "failed"},
+        })
+        await dashboard_manager.broadcast({"type": "ACTIVITY_UPDATE"})
+
+    except Exception as exec_err:
+        print(f"[cue] Command execution error: {exec_err}")
+        import traceback
+        traceback.print_exc()
+        result = {"success": False, "error": str(exec_err)}
+
+    return result
 
 
 # ================== WEBSOCKET ENDPOINTS ==================

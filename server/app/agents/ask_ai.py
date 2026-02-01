@@ -15,11 +15,18 @@ def ask_ai(query: str, context: Dict[str, Any]) -> Dict[str, Any]:
     page_title = context.get("page_title", "")
     current_url = context.get("current_url", "")
     selected_text = context.get("selected_text", "")
-    
+    user_display_name = context.get("user_display_name", "")
+    user_email = context.get("user_email", "")
+    recent_activity = context.get("recent_activity", "")
+
     context_text = f"You are on: {page_title}\nURL: {current_url}"
     if selected_text:
         context_text += f"\nSelected text: {selected_text[:500]}"
-    
+    if user_display_name or user_email:
+        context_text += f"\nUser: {user_display_name or 'unknown'}" + (f" ({user_email})" if user_email else "")
+    if recent_activity:
+        context_text += f"\nRecent Google activity: {recent_activity}"
+
     prompt = f"{context_text}\n\nUser's question: {query}\n\nProvide a helpful answer."
     
     parts = [{"text": prompt}]
