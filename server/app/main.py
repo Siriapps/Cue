@@ -85,6 +85,22 @@ app.add_middleware(
 )
 
 
+@app.on_event("startup")
+async def startup_event():
+    """Initialize MongoDB connection on startup."""
+    try:
+        from app.db.mongo import get_client
+        print("[cue] Testing MongoDB connection...")
+        client = get_client()
+        # Verify connection is working
+        client.admin.command('ping')
+        print("[cue] MongoDB connection verified successfully")
+    except Exception as e:
+        print(f"[cue] WARNING: MongoDB connection failed on startup: {e}")
+        print("[cue] The application will continue, but database operations may fail.")
+        # Don't raise - allow app to start even if DB is down (for development)
+
+
 # Global exception handler to ensure all errors return JSON
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):

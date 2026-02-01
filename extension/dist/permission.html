@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Enable Microphone for Cue</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f3f4f6;
+            text-align: center;
+        }
+
+        .container {
+            background: white;
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            max-width: 400px;
+        }
+
+        h1 {
+            font-size: 24px;
+            margin-bottom: 16px;
+            color: #111827;
+        }
+
+        p {
+            color: #6b7280;
+            margin-bottom: 24px;
+            line-height: 1.5;
+        }
+
+        button {
+            background-color: #6366f1;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            font-size: 16px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        button:hover {
+            background-color: #4f46e5;
+        }
+
+        .success {
+            display: none;
+            color: #059669;
+            font-weight: 500;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>Microphone Access Required</h1>
+        <p>To use the "Hey Cue" wake word, you need to grant microphone access.</p>
+        <p style="color: #dc2626; font-size: 14px; margin-top: 16px;"><strong>Important:</strong> If you see "Requested device not found" errors, you may need to grant microphone permission at the macOS system level:</p>
+        <ol style="text-align: left; color: #6b7280; font-size: 14px; margin: 16px 0; padding-left: 24px;">
+            <li>Open <strong>System Settings</strong> → <strong>Privacy & Security</strong> → <strong>Microphone</strong></li>
+            <li>Ensure <strong>Google Chrome</strong> is enabled</li>
+            <li>If Chrome is not listed, try using the microphone in another app first</li>
+            <li>Then reload this page and click the button below</li>
+        </ol>
+        <button id="request">Allow Microphone</button>
+        <p class="success" id="success">Permission Granted! You can verify this tab is closed.</p>
+    </div>
+    <script src="permission.js"></script>
+</body>
+
+</html>

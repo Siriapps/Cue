@@ -8,6 +8,7 @@ import AudioSessionCard from './components/AudioSessionCard';
 import PrismTaskCard from './components/PrismTaskCard';
 import ReelsFeed from './components/ReelsFeed';
 import SessionDetail from './components/SessionDetail';
+import DashboardHalo from './components/DashboardHalo';
 
 // Pages
 import Landing from './pages/Landing';
@@ -618,6 +619,7 @@ function App() {
 
   return (
     <>
+      {isAuthenticated && <DashboardHalo user={user} />}
       <Routes>
         {/* Public routes */}
         <Route path="/" element={isAuthenticated ? <Navigate to="/library" replace /> : <Landing />} />

@@ -24,22 +24,45 @@ function ensureRoot(): HTMLElement {
     host.style.zIndex = "2147483647";
     host.style.pointerEvents = "none"; // Allow clicks to pass through to page
 
-    // Insert at the beginning of the body
-    if (document.body) {
-      document.body.insertBefore(host, document.body.firstChild);
-    } else {
-      document.documentElement.appendChild(host);
+    // Insert at the beginning of the body, or documentElement if body doesn't exist
+    try {
+      if (document.body) {
+        document.body.insertBefore(host, document.body.firstChild);
+      } else {
+        // If body doesn't exist yet, append to documentElement
+        document.documentElement.appendChild(host);
+      }
+    } catch (error) {
+      console.error("[cue] Failed to insert root element:", error);
+      // Fallback: try appending to documentElement
+      try {
+        document.documentElement.appendChild(host);
+      } catch (e) {
+        console.error("[cue] Complete failure to insert root:", e);
+        throw e;
+      }
     }
   }
 
-  const shadow = host.shadowRoot || host.attachShadow({ mode: "open" });
+  // Ensure shadow DOM exists
+  let shadow: ShadowRoot;
+  try {
+    shadow = host.shadowRoot || host.attachShadow({ mode: "open" });
+  } catch (error) {
+    console.error("[cue] Failed to create shadow DOM:", error);
+    throw error;
+  }
   
   // Inject CSS into Shadow DOM if not already present
   if (!shadow.querySelector("#cue-halo-styles")) {
-    const styleEl = document.createElement("style");
-    styleEl.id = "cue-halo-styles";
-    styleEl.textContent = haloStyles;
-    shadow.appendChild(styleEl);
+    try {
+      const styleEl = document.createElement("style");
+      styleEl.id = "cue-halo-styles";
+      styleEl.textContent = haloStyles;
+      shadow.appendChild(styleEl);
+    } catch (error) {
+      console.error("[cue] Failed to inject styles:", error);
+    }
   }
   
   // Use querySelector instead of getElementById in Shadow DOM
@@ -95,6 +118,12 @@ function initializeUI() {
 
 // Wait for DOM to be ready before initializing
 function init() {
+  // Skip initialization on chrome-extension:// and chrome:// pages (call_ai)
+  if (window.location.protocol === "chrome-extension:" || window.location.protocol === "chrome:") {
+    console.log("[cue] Skipping initialization on extension page");
+    return;
+  }
+
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", initializeUI);
   } else {
@@ -102,4 +131,32 @@ function init() {
   }
 }
 
+// Initialize immediately
 init();
+
+// Also listen for navigation events (for SPAs)
+if (typeof window !== "undefined") {
+  // Re-initialize on navigation for SPAs
+  let lastUrl = window.location.href;
+  const checkNavigation = () => {
+    if (window.location.href !== lastUrl) {
+      lastUrl = window.location.href;
+      console.log("[cue] Page navigation detected, re-initializing...");
+      // Small delay to let the page settle
+      setTimeout(() => {
+        const existingRoot = document.getElementById(ROOT_ID);
+        if (!existingRoot) {
+          init();
+        }
+      }, 100);
+    }
+  };
+  
+  // Check periodically for SPA navigation
+  setInterval(checkNavigation, 1000);
+  
+  // Also listen to popstate for back/forward navigation
+  window.addEventListener("popstate", () => {
+    setTimeout(checkNavigation, 100);
+  });
+}

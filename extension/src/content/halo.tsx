@@ -4,6 +4,9 @@ import { summarizePage } from "./readability";
 import { startMicRecording, pauseMicRecording, resumeMicRecording, stopMicRecording } from "./session_recorder";
 import { openVoiceChatPopup } from "./voice_chat_popup";
 import type { CueContext } from "../shared/context_store";
+import { useWakeWord } from "./voice/useWakeWord";
+import { useSpeechRecognition } from "./voice/useSpeechRecognition";
+import { requestMicrophoneAccess } from "./voice/voiceUtils";
 
 const LIBRARY_URL = import.meta.env.VITE_LIBRARY_URL || "http://localhost:3001";
 
@@ -77,6 +80,16 @@ export function HaloStrip(): React.JSX.Element {
   const [chatMicListening, setChatMicListening] = useState(false);
   const [chatInterimTranscript, setChatInterimTranscript] = useState("");
   const chatRecognitionRef = useRef<any>(null);
+
+  // Voice/Transcription State (call_ai)
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [autoSendEnabled, setAutoSendEnabled] = useState(false);
+  const silenceTimeoutRef = useRef<number | null>(null);
+  const lastTranscriptTimeRef = useRef<number | null>(null);
+  const wakeWordStopRef = useRef<(() => void) | null>(null);
+  const recognitionStartRef = useRef<(() => void) | null>(null);
+  const recognitionStopRef = useRef<(() => void) | null>(null);
+  const recognitionResetRef = useRef<(() => void) | null>(null);
 
   // Predicted tasks popup state
   type SuggestedTask = {
@@ -160,7 +173,6 @@ export function HaloStrip(): React.JSX.Element {
         const p = message.payload as { tasks?: SuggestedTask[] };
         if (p.tasks && p.tasks.length > 0) {
           console.log(`[cue] Setting ${p.tasks.length} predicted tasks`);
-          // Normalize id so dashboard (_id) and extension (id) stay in sync
           const normalized = p.tasks.slice(0, 5).map((t) => ({
             ...t,
             id: t.id ?? (t as { _id?: string })._id,
@@ -174,12 +186,10 @@ export function HaloStrip(): React.JSX.Element {
         const p = message.payload as { success?: boolean; taskId?: string; error?: string; open_url?: string; message?: string; promptCopied?: boolean };
         setExecutingTaskId(null);
         if (p.success && p.taskId) {
-          // Mark task as completed in the list so it stays visible in notifications and matches AI activity
           setPredictedTasks((prev) =>
             prev.map((t) => (t.id === p.taskId ? { ...t, status: "completed" as const } : t))
           );
         }
-        // Show toast notification if prompt was copied or there's a message
         if (p.promptCopied && p.message) {
           setToastMessage(p.message);
           setToastLibraryUrl(null);
@@ -194,14 +204,10 @@ export function HaloStrip(): React.JSX.Element {
       if (message.type === "COPY_TO_CLIPBOARD" && message.payload) {
         const p = message.payload as { text?: string };
         if (p.text) {
-          // Try modern Clipboard API first, fallback to execCommand
           if (navigator.clipboard && navigator.clipboard.writeText) {
             navigator.clipboard.writeText(p.text).then(() => {
               console.log("[cue] Copied prompt to clipboard");
-            }).catch(() => {
-              // Fallback to execCommand on failure
-              fallbackCopyToClipboard(p.text);
-            });
+            }).catch(() => { fallbackCopyToClipboard(p.text); });
           } else {
             fallbackCopyToClipboard(p.text);
           }
@@ -487,7 +493,6 @@ export function HaloStrip(): React.JSX.Element {
     ];
     let result = text;
     for (const [pattern, replacement] of replacements) {
-      // Don't double-replace if already has @
       result = result.replace(pattern, (match, offset) => {
         if (offset > 0 && result[offset - 1] === "@") return match;
         return replacement;
@@ -496,52 +501,15 @@ export function HaloStrip(): React.JSX.Element {
     return result;
   };
 
-  // Chat mic toggle
-  const toggleChatMic = () => {
-    if (chatMicListening) {
-      // Stop
-      if (chatRecognitionRef.current) {
-        try { chatRecognitionRef.current.stop(); } catch { /* ignore */ }
-      }
-      setChatMicListening(false);
-      setChatInterimTranscript("");
-      return;
-    }
-    const SpeechRecognitionClass = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognitionClass) return;
-    const recognition = new SpeechRecognitionClass();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = "en-US";
-    recognition.onstart = () => { setChatMicListening(true); setChatInterimTranscript(""); };
-    recognition.onresult = (event: any) => {
-      let interim = "";
-      let final = "";
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const transcript = event.results[i][0].transcript;
-        if (event.results[i].isFinal) { final += transcript; } else { interim += transcript; }
-      }
-      if (final) {
-        const replaced = replaceServiceKeywords(final);
-        setQuery((prev) => (prev + " " + replaced).trim());
-        setChatInterimTranscript("");
-      } else {
-        setChatInterimTranscript(interim);
-      }
-    };
-    recognition.onerror = () => { setChatMicListening(false); setChatInterimTranscript(""); };
-    recognition.onend = () => { setChatMicListening(false); setChatInterimTranscript(""); };
-    chatRecognitionRef.current = recognition;
-    try { recognition.start(); } catch { setChatMicListening(false); }
-  };
-
-  const handleAsk = () => {
-    if (!query.trim()) return;
-    const currentQuery = query.trim();
+  // Auto-send function (call_ai) - reused for voice-triggered send
+  const autoSendQuery = useCallback((text: string) => {
+    if (!text.trim()) return;
+    const currentQuery = text.trim();
     setQuery("");
     setIsThinking(true);
     setAiAnswer(null);
-    setCommandPreview(null);
+    setIsTranscribing(false);
+    if (recognitionStopRef.current) recognitionStopRef.current();
 
     const selectedText = window.getSelection()?.toString() || "";
 
@@ -590,6 +558,53 @@ export function HaloStrip(): React.JSX.Element {
       setIsThinking(false);
       setAiAnswer("Extension context invalidated. Please reload the page.");
     }
+  }, []);
+
+  const handleAsk = () => {
+    if (!query.trim()) return;
+    if (isTranscribing && recognitionStopRef.current) {
+      recognitionStopRef.current();
+      setIsTranscribing(false);
+    }
+    autoSendQuery(query);
+  };
+
+  // Chat mic toggle (main)
+  const toggleChatMic = () => {
+    if (chatMicListening) {
+      if (chatRecognitionRef.current) {
+        try { (chatRecognitionRef.current as any).stop(); } catch { /* ignore */ }
+      }
+      setChatMicListening(false);
+      setChatInterimTranscript("");
+      return;
+    }
+    const SpeechRecognitionClass = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognitionClass) return;
+    const recognition = new SpeechRecognitionClass();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = "en-US";
+    recognition.onstart = () => { setChatMicListening(true); setChatInterimTranscript(""); };
+    recognition.onresult = (event: any) => {
+      let interim = "";
+      let final = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) { final += transcript; } else { interim += transcript; }
+      }
+      if (final) {
+        const replaced = replaceServiceKeywords(final);
+        setQuery((prev) => (prev + " " + replaced).trim());
+        setChatInterimTranscript("");
+      } else {
+        setChatInterimTranscript(interim);
+      }
+    };
+    recognition.onerror = () => { setChatMicListening(false); setChatInterimTranscript(""); };
+    recognition.onend = () => { setChatMicListening(false); setChatInterimTranscript(""); };
+    chatRecognitionRef.current = recognition;
+    try { recognition.start(); } catch { setChatMicListening(false); }
   };
 
   // Confirm and execute command
@@ -651,19 +666,208 @@ export function HaloStrip(): React.JSX.Element {
     }
   };
 
+  // Speech Recognition - handles transcription after wake word (call_ai)
+  const handleTranscript = useCallback((text: string) => {
+    setQuery(text);
+    lastTranscriptTimeRef.current = Date.now();
+    
+    // Clear existing silence timeout
+    if (silenceTimeoutRef.current) {
+      clearTimeout(silenceTimeoutRef.current);
+    }
+    
+    // Auto-send after 1.5 seconds of silence
+    if (text.trim() && isTranscribing && autoSendEnabled) {
+      silenceTimeoutRef.current = window.setTimeout(() => {
+        console.log("[cue] Silence detected, auto-sending...");
+        if (text.trim()) {
+          // Stop transcription and hide "Listening" before sending
+          if (recognitionStopRef.current) {
+            recognitionStopRef.current();
+          }
+          setIsTranscribing(false);
+          setAutoSendEnabled(false);
+          autoSendQuery(text.trim());
+        }
+      }, 1500);
+    }
+  }, [isTranscribing, autoSendEnabled, autoSendQuery]);
+
+  const handleFinalTranscript = useCallback((text: string) => {
+    setQuery(text);
+    if (silenceTimeoutRef.current) {
+      clearTimeout(silenceTimeoutRef.current);
+      silenceTimeoutRef.current = null;
+    }
+  }, []);
+
+  const {
+    isListening: isRecognitionListening,
+    transcript,
+    error: recognitionError,
+    start: startRecognition,
+    stop: stopRecognition,
+    reset: resetTranscript,
+  } = useSpeechRecognition({
+    onTranscript: handleTranscript,
+    onFinalTranscript: handleFinalTranscript,
+    enabled: false, // We'll control it manually
+    continuous: true,
+    interimResults: true,
+  });
+
+  // Store refs for use in callbacks
+  useEffect(() => {
+    recognitionStartRef.current = startRecognition;
+    recognitionStopRef.current = stopRecognition;
+    recognitionResetRef.current = resetTranscript;
+  }, [startRecognition, stopRecognition, resetTranscript]);
+
+  // Wake Word Integration
+  const { 
+    stop: stopWakeWord, 
+    isListening: isWakeWordListening,
+    error: wakeWordError 
+  } = useWakeWord({
+    enabled: sessionState === "idle" && !isLive && !isTranscribing, // Disable when recording, live, or transcribing
+    onWakeWordDetected: async () => {
+      // Check if this tab is the active/focused tab before responding
+      if (!document.hasFocus()) {
+        console.log("[cue] Wake word detected but this tab is not active, ignoring...");
+        return;
+      }
+      
+      console.log("[cue] 🎤 Wake up call detected! Opening chat and starting transcription...");
+      
+      // Only activate if not already recording a session or live streaming
+      if (sessionState === "idle" && !isLive && !isTranscribing) {
+        // Stop wake word detection
+        if (stopWakeWord) {
+          stopWakeWord();
+        }
+        
+        // Open chat panel
+        setChatOpen(true);
+        
+        // Reset transcript and clear query
+        if (recognitionResetRef.current) {
+          recognitionResetRef.current();
+        }
+        setQuery('');
+        
+        // Enable auto-send for wake word triggered commands
+        setAutoSendEnabled(true);
+        
+        // Show "Listening" indicator immediately
+        setIsTranscribing(true);
+        
+        try {
+          // Request microphone permission
+          await requestMicrophoneAccess();
+        } catch (error: any) {
+          console.error("[cue] Microphone permission denied after wake word:", error);
+          setIsTranscribing(false);
+          return;
+        }
+        
+        // Wait a moment for wake word recognition to fully release the microphone
+        // Then start transcription
+        setTimeout(() => {
+          // The useSpeechRecognition hook will auto-start when enabled becomes true
+          // But we'll also manually start it to ensure it happens
+          setTimeout(() => {
+            if (recognitionStartRef.current) {
+              console.log("[cue] Starting transcription after wake word...");
+              recognitionStartRef.current();
+            }
+          }, 100);
+        }, 300);
+      } else {
+        console.log("[cue] Wake word detected but session is active, ignoring...");
+      }
+    }
+  });
+
+  // Store wake word stop ref
+  useEffect(() => {
+    wakeWordStopRef.current = stopWakeWord;
+  }, [stopWakeWord]);
+
+  // Start transcription when isTranscribing becomes true
+  useEffect(() => {
+    let timer: number | null = null;
+    
+    if (isTranscribing && !isRecognitionListening) {
+      console.log("[cue] Starting transcription after wake word...");
+      // Ensure wake word is stopped first
+      if (wakeWordStopRef.current) {
+        wakeWordStopRef.current();
+      }
+      // Ensure we have microphone permission before starting
+      requestMicrophoneAccess()
+        .then((stream) => {
+          // Release the stream immediately - we just needed permission
+          stream.getTracks().forEach(track => track.stop());
+          // Delay to ensure wake word recognition has fully released the microphone
+          timer = window.setTimeout(() => {
+            console.log("[cue] Attempting to start transcription...");
+            try {
+              if (recognitionStartRef.current) {
+                recognitionStartRef.current();
+              }
+            } catch (error: any) {
+              console.error("[cue] Failed to start transcription:", error);
+              setIsTranscribing(false);
+            }
+          }, 400);
+        })
+        .catch((error: any) => {
+          console.error("[cue] Microphone permission denied for transcription:", error);
+          setIsTranscribing(false);
+        });
+    } else if (!isTranscribing && isRecognitionListening) {
+      console.log("[cue] Stopping transcription...");
+      stopRecognition();
+      // Reset auto-send flag when transcription stops
+      setAutoSendEnabled(false);
+      // Resume wake word detection after transcription stops
+      if (sessionState === "idle" && !isLive) {
+        setTimeout(() => {
+          console.log("[cue] Resuming wake word detection...");
+          // Wake word will auto-start when enabled becomes true
+        }, 500);
+      }
+    }
+    
+    return () => {
+      if (timer) {
+        clearTimeout(timer);
+      }
+    };
+  }, [isTranscribing, isRecognitionListening, sessionState, isLive, stopRecognition]);
+
+  // Cleanup silence timeout
+  useEffect(() => {
+    return () => {
+      if (silenceTimeoutRef.current) {
+        clearTimeout(silenceTimeoutRef.current);
+      }
+    };
+  }, []);
+
   // Session Controls
   const handleStartSession = async () => {
     try {
       setSessionState("recording");
       setSessionStartTime(Date.now());
-      
+
       // Start mic recording
       await startMicRecording();
-      
+
       // Get page info for the session
       const pageTitle = document.title;
       const pageUrl = window.location.href;
-      
+
       // Notify background script
       try {
         if (!chrome?.runtime?.id) {
@@ -730,10 +934,10 @@ export function HaloStrip(): React.JSX.Element {
   const handleStopSession = async () => {
     try {
       setSessionState("idle");
-      
+
       // Stop mic recording and get audio blob
       const audioBlob = await stopMicRecording();
-      
+
       // Convert to base64
       const audioBase64 = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
@@ -745,11 +949,11 @@ export function HaloStrip(): React.JSX.Element {
         };
         reader.readAsDataURL(audioBlob);
       });
-      
+
       // Get page info
       const pageTitle = document.title;
       const pageUrl = window.location.href;
-      
+
       // Send to background for processing
       try {
         if (!chrome?.runtime?.id) {
@@ -1001,12 +1205,12 @@ export function HaloStrip(): React.JSX.Element {
         <div className="halo-collapsed-icon">
           <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
             <circle cx="12" cy="12" r="10" fill="url(#logoGradCollapsed)" />
-            <path d="M8 12C8 9.79 9.79 8 12 8C14.21 8 16 9.79 16 12" stroke="white" strokeWidth="2" strokeLinecap="round"/>
-            <circle cx="12" cy="14" r="2" fill="white"/>
+            <path d="M8 12C8 9.79 9.79 8 12 8C14.21 8 16 9.79 16 12" stroke="white" strokeWidth="2" strokeLinecap="round" />
+            <circle cx="12" cy="14" r="2" fill="white" />
             <defs>
               <linearGradient id="logoGradCollapsed" x1="2" y1="2" x2="22" y2="22">
-                <stop stopColor="#6366f1"/>
-                <stop offset="1" stopColor="#8b5cf6"/>
+                <stop stopColor="#6366f1" />
+                <stop offset="1" stopColor="#8b5cf6" />
               </linearGradient>
             </defs>
           </svg>
@@ -1025,17 +1229,36 @@ export function HaloStrip(): React.JSX.Element {
           <div className="halo-logo">
             <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
               <circle cx="12" cy="12" r="10" fill="url(#logoGrad)" />
-              <path d="M8 12C8 9.79 9.79 8 12 8C14.21 8 16 9.79 16 12" stroke="white" strokeWidth="2" strokeLinecap="round"/>
-              <circle cx="12" cy="14" r="2" fill="white"/>
+              <path d="M8 12C8 9.79 9.79 8 12 8C14.21 8 16 9.79 16 12" stroke="white" strokeWidth="2" strokeLinecap="round" />
+              <circle cx="12" cy="14" r="2" fill="white" />
               <defs>
                 <linearGradient id="logoGrad" x1="2" y1="2" x2="22" y2="22">
-                  <stop stopColor="#6366f1"/>
-                  <stop offset="1" stopColor="#8b5cf6"/>
+                  <stop stopColor="#6366f1" />
+                  <stop offset="1" stopColor="#8b5cf6" />
                 </linearGradient>
               </defs>
             </svg>
           </div>
           <span className="halo-brand-text">cue</span>
+          {/* Listening Indicator - Only show when actually transcribing (after wake word) */}
+          {isTranscribing && (
+            <div 
+              className="wake-word-indicator" 
+              title="Listening and transcribing..."
+            >
+              <svg 
+                viewBox="0 0 24 24" 
+                fill="currentColor" 
+                width="12" 
+                height="12"
+                className="wake-word-mic-icon"
+              >
+                <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z" />
+                <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z" />
+              </svg>
+              <span>Listening</span>
+            </div>
+          )}
         </div>
 
         {/* Session Controls */}
@@ -1043,7 +1266,7 @@ export function HaloStrip(): React.JSX.Element {
           {sessionState === "idle" ? (
             <button className="halo-btn start-session" onClick={handleStartSession}>
               <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
-                <path d="M8 5v14l11-7z"/>
+                <path d="M8 5v14l11-7z" />
               </svg>
               <span>Start Session</span>
             </button>
@@ -1059,14 +1282,14 @@ export function HaloStrip(): React.JSX.Element {
               {sessionState === "recording" ? (
                 <button className="halo-btn pause-btn" onClick={handlePauseSession} title="Pause">
                   <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
-                    <rect x="6" y="4" width="4" height="16"/>
-                    <rect x="14" y="4" width="4" height="16"/>
+                    <rect x="6" y="4" width="4" height="16" />
+                    <rect x="14" y="4" width="4" height="16" />
                   </svg>
                 </button>
               ) : (
                 <button className="halo-btn resume-btn" onClick={handleResumeSession} title="Resume">
                   <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
-                    <path d="M8 5v14l11-7z"/>
+                    <path d="M8 5v14l11-7z" />
                   </svg>
                 </button>
               )}
@@ -1074,7 +1297,7 @@ export function HaloStrip(): React.JSX.Element {
               {/* Stop Button */}
               <button className="halo-btn stop-btn" onClick={handleStopSession} title="Stop & Save">
                 <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
-                  <rect x="6" y="6" width="12" height="12" rx="2"/>
+                  <rect x="6" y="6" width="12" height="12" rx="2" />
                 </svg>
                 <span>Stop</span>
               </button>
@@ -1094,12 +1317,17 @@ export function HaloStrip(): React.JSX.Element {
           <span>{isLive ? "Live" : "Go Live"}</span>
         </button>
 
-        {/* Ask AI Button */}
-        <button className="halo-btn ask-ai" onClick={toggleChat}>
+        {/* Ask AI Button - with visual feedback when transcribing */}
+        <button 
+          className={`halo-btn ask-ai ${isTranscribing ? "recording" : ""}`} 
+          onClick={toggleChat}
+          title={isTranscribing ? "Listening..." : "Ask AI"}
+        >
           <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
-            <path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z"/>
+            <path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z" />
           </svg>
-          <span>Ask AI</span>
+          <span>{isTranscribing ? "Listening..." : "Ask AI"}</span>
+          {isTranscribing && <span className="pulse-indicator"></span>}
         </button>
 
         {/* Context Button */}
@@ -1117,10 +1345,10 @@ export function HaloStrip(): React.JSX.Element {
         {/* Library Button */}
         <button className="halo-btn library" onClick={openLibrary}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
-            <rect x="3" y="3" width="7" height="7"/>
-            <rect x="14" y="3" width="7" height="7"/>
-            <rect x="14" y="14" width="7" height="7"/>
-            <rect x="3" y="14" width="7" height="7"/>
+            <rect x="3" y="3" width="7" height="7" />
+            <rect x="14" y="3" width="7" height="7" />
+            <rect x="14" y="14" width="7" height="7" />
+            <rect x="3" y="14" width="7" height="7" />
           </svg>
           <span>Library</span>
         </button>
@@ -1377,7 +1605,7 @@ export function HaloStrip(): React.JSX.Element {
       {/* Minimize Button - Right Side */}
       <button className="halo-collapse-btn" onClick={toggleCollapse} title="Minimize">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-          <polyline points="6 9 12 15 18 9"/>
+          <polyline points="6 9 12 15 18 9" />
         </svg>
       </button>
 
@@ -1399,7 +1627,6 @@ export function HaloStrip(): React.JSX.Element {
               <button className="halo-close" onClick={toggleChat}>×</button>
             </div>
           </div>
-
           {/* Command hints */}
           <div style={{ fontSize: '11px', color: '#71717a', marginBottom: '8px' }}>
             Try: @gmail draft... | @calendar create... | @tasks add...
@@ -1408,25 +1635,32 @@ export function HaloStrip(): React.JSX.Element {
           <div className="halo-chat-input-row">
             <input
               className="halo-input"
-              placeholder={chatMicListening ? "Listening..." : placeholder}
-              value={query + (chatInterimTranscript ? " " + chatInterimTranscript : "")}
+              placeholder={(chatMicListening || isTranscribing) ? "Listening..." : placeholder}
+              value={isTranscribing ? (transcript || query || "") : (query + (chatInterimTranscript ? " " + chatInterimTranscript : ""))}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => {
                 e.stopPropagation();
-                if (e.key === "Enter") handleAsk();
+                if (e.key === "Enter") {
+                  if (isTranscribing && recognitionStopRef.current) {
+                    recognitionStopRef.current();
+                    setIsTranscribing(false);
+                    setAutoSendEnabled(false);
+                  }
+                  handleAsk();
+                }
               }}
               onKeyUp={(e) => e.stopPropagation()}
               onKeyPress={(e) => e.stopPropagation()}
               onClick={(e) => e.stopPropagation()}
               onFocus={(e) => e.stopPropagation()}
-              disabled={chatMicListening}
+              disabled={chatMicListening || isTranscribing}
             />
             <button
-              className={`halo-chat-mic-btn ${chatMicListening ? "listening" : ""}`}
+              className={`halo-chat-mic-btn ${(chatMicListening || isTranscribing) ? "listening" : ""}`}
               onClick={toggleChatMic}
-              title={chatMicListening ? "Stop listening" : "Voice input"}
+              title={(chatMicListening || isTranscribing) ? "Stop listening" : "Voice input"}
             >
-              {chatMicListening ? (
+              {(chatMicListening || isTranscribing) ? (
                 <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
                   <rect x="6" y="6" width="12" height="12" rx="2"/>
                 </svg>
@@ -1438,14 +1672,14 @@ export function HaloStrip(): React.JSX.Element {
               )}
             </button>
           </div>
-          {chatMicListening && (
+          {(chatMicListening || isTranscribing) && (
             <div className="halo-chat-listening">
               <div className="voice-wave"><span></span><span></span><span></span><span></span><span></span></div>
               <span style={{ fontSize: '11px', color: '#8b5cf6' }}>Speak now... (say "gmail draft" for @gmail)</span>
             </div>
           )}
           <div className="halo-actions">
-            <button className="halo-btn send-btn" onClick={handleAsk} disabled={chatMicListening}>
+            <button className="halo-btn send-btn" onClick={handleAsk} disabled={chatMicListening || isTranscribing}>
               Send
             </button>
           </div>

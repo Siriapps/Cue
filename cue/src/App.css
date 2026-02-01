@@ -384,6 +384,57 @@ body {
   border-color: transparent;
 }
 
+/* Mic Button */
+.dashboard-halo .halo-btn.mic-btn {
+  background: #f0f9ff;
+  color: #0284c7;
+  border: 1px solid #bae6fd;
+  position: relative;
+}
+
+.dashboard-halo .halo-btn.mic-btn:hover {
+  background: #e0f2fe;
+}
+
+.dashboard-halo .halo-btn.mic-btn.active {
+  background: #dbeafe;
+  color: #2563eb;
+  border-color: #93c5fd;
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+.dashboard-halo .halo-btn.mic-btn.listening {
+  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+  color: white;
+  border-color: transparent;
+  animation: pulse-listening 1.5s ease-in-out infinite;
+  box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+}
+
+.dashboard-halo .halo-btn.mic-btn.listening:hover {
+  background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(37, 99, 235, 0);
+  }
+}
+
+@keyframes pulse-listening {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 0 12px rgba(239, 68, 68, 0);
+    transform: scale(1.05);
+  }
+}
+
 /* Dashboard Halo Chat Panel */
 .dashboard-halo .halo-chat {
   position: absolute;
@@ -421,6 +472,11 @@ body {
   color: #6b7280;
 }
 
+.dashboard-halo .halo-input-wrapper {
+  position: relative;
+  width: 100%;
+}
+
 .dashboard-halo .halo-input {
   width: 100%;
   padding: 12px 14px;
@@ -431,6 +487,7 @@ body {
   font-size: 14px;
   outline: none;
   transition: border-color 0.2s;
+  padding-right: 140px; /* Space for listening indicator */
 }
 
 .dashboard-halo .halo-input:focus {
@@ -440,6 +497,70 @@ body {
 
 .dashboard-halo .halo-input::placeholder {
   color: var(--text-muted);
+}
+
+/* Listening Indicator */
+.dashboard-halo .listening-indicator {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.dashboard-halo .listening-dot {
+  width: 8px;
+  height: 8px;
+  background: #ef4444;
+  border-radius: 50%;
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+.dashboard-halo .listening-text {
+  font-size: 12px;
+  color: #ef4444;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+@keyframes pulse-dot {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(1.2);
+  }
+}
+
+/* Error Message */
+.dashboard-halo .halo-error {
+  padding: 12px;
+  background: #fef2f2;
+  border-radius: 8px;
+  border: 1px solid #fecaca;
+  color: #dc2626;
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dashboard-halo .halo-btn.permission-btn {
+  background: #dc2626;
+  color: white;
+  border: none;
+  padding: 6px 12px;
+  font-size: 12px;
+  align-self: flex-start;
+}
+
+.dashboard-halo .halo-btn.permission-btn:hover {
+  background: #b91c1c;
 }
 
 .dashboard-halo .halo-actions {
