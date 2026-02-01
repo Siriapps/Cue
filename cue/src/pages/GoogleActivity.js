@@ -291,6 +291,7 @@ function GoogleActivity({ lastActivityUpdate = 0, user }) {
     await handleAccept(updatedTask);
   };
 
+  // Do not show draft generation in activity (only sent/created actions)
   const filteredActivities = activities.filter(
     (a) => !(a.service === 'gmail' && a.action === 'create_draft')
   );
