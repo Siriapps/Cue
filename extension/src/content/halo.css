@@ -343,6 +343,22 @@
   box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4);
 }
 
+/* Context Button - Purple */
+.halo-btn.context {
+  background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
+  color: white;
+  box-shadow: 0 2px 8px rgba(139, 92, 246, 0.3);
+}
+
+.halo-btn.context:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4);
+}
+
+.halo-btn.context.active {
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.8), 0 2px 8px rgba(139, 92, 246, 0.4);
+}
+
 /* Library Button - Purple */
 .halo-btn.library {
   background: linear-gradient(135deg, #a855f7 0%, #9333ea 100%);
@@ -422,6 +438,167 @@
 .halo-close:hover {
   color: #374151;
   background: rgba(0, 0, 0, 0.05);
+}
+
+/* Context Panel */
+.halo-context-panel {
+  position: fixed;
+  top: 70px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 360px;
+  max-height: 70vh;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: slide-down 0.25s ease-out;
+  z-index: 2147483646;
+  pointer-events: auto;
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.12), 0 4px 12px rgba(0, 0, 0, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  overflow: hidden;
+}
+
+.halo-context-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1a1a2e;
+}
+
+.halo-context-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #374151;
+  cursor: pointer;
+}
+
+.halo-context-checkbox input {
+  width: 16px;
+  height: 16px;
+}
+
+.halo-context-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.halo-context-actions .halo-btn {
+  background: rgba(139, 92, 246, 0.15);
+  color: #5b21b6;
+  padding: 6px 12px;
+  font-size: 11px;
+}
+
+.halo-context-actions .halo-btn:hover {
+  background: rgba(139, 92, 246, 0.25);
+}
+
+.halo-context-lists {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.halo-context-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+
+.halo-context-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 12px;
+}
+
+.halo-context-item {
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.halo-context-item:last-child {
+  border-bottom: none;
+}
+
+.halo-context-link {
+  color: #6366f1;
+  text-decoration: none;
+}
+
+.halo-context-link:hover {
+  text-decoration: underline;
+}
+
+.halo-context-item.halo-context-chat {
+  color: #374151;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.halo-context-role {
+  font-weight: 600;
+  color: #5b21b6;
+  margin-right: 4px;
+}
+
+.halo-context-empty {
+  color: #9ca3af;
+  font-style: italic;
+}
+
+.halo-btn-suggest {
+  background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
+  color: white;
+  padding: 10px 16px;
+  font-size: 13px;
+  align-self: flex-start;
+}
+
+.halo-btn-suggest:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4);
+}
+
+.halo-btn-suggest:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.halo-context-suggestion {
+  padding: 12px;
+  background: rgba(139, 92, 246, 0.08);
+  border: 1px solid rgba(139, 92, 246, 0.2);
+  border-radius: 12px;
+  font-size: 12px;
+  color: #1a1a2e;
+}
+
+.halo-context-suggestion-title {
+  font-weight: 600;
+  color: #5b21b6;
+  margin-bottom: 6px;
+}
+
+.halo-context-suggestion-text {
+  white-space: pre-wrap;
+  line-height: 1.5;
 }
 
 .halo-input {

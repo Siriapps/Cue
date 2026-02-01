@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState, useCallback, useRef } from "react"
 import { startGoLive, stopGoLive } from "./go_live";
 import { summarizePage } from "./readability";
 import { startMicRecording, pauseMicRecording, resumeMicRecording, stopMicRecording } from "./session_recorder";
+import type { CueContext } from "../shared/context_store";
 
 const LIBRARY_URL = import.meta.env.VITE_LIBRARY_URL || "http://localhost:3001";
 
@@ -35,12 +36,12 @@ export function HaloStrip(): React.JSX.Element {
   // Go Live State
   const [isLive, setIsLive] = useState(false);
 
-  // Predictive nudge (from Router/Predictor)
-  const [predictiveNudge, setPredictiveNudge] = useState<{
-    next_step: string;
-    mcp_tool?: string;
-    reasoning?: string;
-  } | null>(null);
+  // Context panel (GetContext)
+  const [contextOpen, setContextOpen] = useState(false);
+  const [contextSnapshot, setContextSnapshot] = useState<CueContext | null>(null);
+  const [includeContextForAI, setIncludeContextForAI] = useState(false);
+  const [suggestionText, setSuggestionText] = useState<string | null>(null);
+  const [isSuggesting, setIsSuggesting] = useState(false);
 
   // Check login status on mount
   useEffect(() => {
@@ -55,13 +56,9 @@ export function HaloStrip(): React.JSX.Element {
     }
   }, []);
 
-  // Listen for PREDICTIVE_NUDGE and COMMAND_RESULT from background
+  // Listen for COMMAND_RESULT and COMMAND_EXECUTED from background
   useEffect(() => {
     const listener = (message: { type?: string; payload?: unknown }) => {
-      if (message.type === "PREDICTIVE_NUDGE" && message.payload) {
-        const p = message.payload as { next_step?: string; mcp_tool?: string; reasoning?: string };
-        if (p.next_step) setPredictiveNudge(p);
-      }
       if (message.type === "COMMAND_RESULT" && message.payload) {
         const p = message.payload as {
           preview?: boolean;
@@ -178,6 +175,86 @@ export function HaloStrip(): React.JSX.Element {
     }
   };
 
+  const toggleContext = useCallback(() => {
+    const next = !contextOpen;
+    setContextOpen(next);
+    if (next) {
+      try {
+        if (!chrome?.runtime?.id) return;
+        chrome.runtime.sendMessage({ type: "CONTEXT_GET_SNAPSHOT" }, (response) => {
+          if (chrome.runtime.lastError) return;
+          if (response?.success && response.snapshot) setContextSnapshot(response.snapshot);
+        });
+      } catch {
+        // ignore
+      }
+    } else {
+      setContextSnapshot(null);
+      setSuggestionText(null);
+    }
+  }, [contextOpen]);
+
+  const setIncludeContextPreference = useCallback((checked: boolean) => {
+    setIncludeContextForAI(checked);
+    try {
+      if (chrome?.storage?.local) {
+        chrome.storage.local.set({ cueIncludeContextForAI: checked }, () => {});
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const refreshSearches = useCallback(() => {
+    try {
+      if (!chrome?.runtime?.id) return;
+      chrome.runtime.sendMessage({ type: "CONTEXT_REFRESH_SEARCHES" }, (response) => {
+        if (chrome.runtime.lastError) return;
+        if (response?.success && response.snapshot) setContextSnapshot(response.snapshot);
+      });
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const clearContext = useCallback(() => {
+    try {
+      if (!chrome?.runtime?.id) return;
+      chrome.runtime.sendMessage({ type: "CONTEXT_CLEAR" }, (response) => {
+        if (chrome.runtime.lastError) return;
+        if (response?.success) setContextSnapshot({ recent_searches: [], recent_ai_chats: {}, updatedAt: Date.now() });
+      });
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const suggestFromContext = useCallback(() => {
+    setIsSuggesting(true);
+    setSuggestionText(null);
+    try {
+      if (!chrome?.runtime?.id) {
+        setIsSuggesting(false);
+        return;
+      }
+      chrome.runtime.sendMessage({ type: "CONTEXT_SUGGEST" }, (response) => {
+        setIsSuggesting(false);
+        if (chrome.runtime.lastError) {
+          setSuggestionText("Failed to get suggestion.");
+          return;
+        }
+        if (response?.success && response.suggestion) {
+          setSuggestionText(response.suggestion);
+        } else {
+          setSuggestionText(response?.error || "No suggestion.");
+        }
+      });
+    } catch {
+      setIsSuggesting(false);
+      setSuggestionText("Failed to get suggestion.");
+    }
+  }, []);
+
   const openLibrary = () => {
     try {
       if (!chrome?.runtime?.id) {
@@ -225,6 +302,7 @@ export function HaloStrip(): React.JSX.Element {
           type: "ASK_AI",
           query: currentQuery,
           selectedText: selectedText.substring(0, 500),
+          includeContext: includeContextForAI,
         },
         (response) => {
           if (chrome.runtime.lastError) {
@@ -626,6 +704,18 @@ export function HaloStrip(): React.JSX.Element {
           <span>Ask AI</span>
         </button>
 
+        {/* Context Button */}
+        <button
+          className={`halo-btn context ${contextOpen ? "active" : ""}`}
+          onClick={toggleContext}
+          title="Context"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
+            <path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+          </svg>
+          <span>Context</span>
+        </button>
+
         {/* Library Button */}
         <button className="halo-btn library" onClick={openLibrary}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
@@ -637,15 +727,6 @@ export function HaloStrip(): React.JSX.Element {
           <span>Library</span>
         </button>
 
-        {/* Predictive Nudge */}
-        {predictiveNudge && (
-          <div className="halo-nudge">
-            <div className="halo-nudge-text">{predictiveNudge.next_step}</div>
-            <div className="halo-nudge-actions">
-              <button type="button" className="halo-nudge-btn" onClick={() => setPredictiveNudge(null)}>Dismiss</button>
-            </div>
-          </div>
-        )}
       </div>
 
       {/* Minimize Button - Right Side */}
@@ -761,6 +842,65 @@ export function HaloStrip(): React.JSX.Element {
           {aiAnswer && !isThinking && !commandPreview && (
             <div className="halo-answer">
               <div className="halo-answer-text">{aiAnswer}</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Context Panel */}
+      {contextOpen && (
+        <div className="halo-context-panel">
+          <div className="halo-context-header">
+            <span>Context</span>
+            <button className="halo-close" onClick={toggleContext}>×</button>
+          </div>
+          <label className="halo-context-checkbox">
+            <input
+              type="checkbox"
+              checked={includeContextForAI}
+              onChange={(e) => setIncludeContextPreference(e.target.checked)}
+            />
+            <span>Include context when I ask AI</span>
+          </label>
+          <div className="halo-context-actions">
+            <button type="button" className="halo-btn" onClick={refreshSearches}>Refresh</button>
+            <button type="button" className="halo-btn" onClick={clearContext}>Clear</button>
+          </div>
+          <div className="halo-context-lists">
+            <div className="halo-context-section">
+              <div className="halo-context-section-title">Recent searches</div>
+              <ul className="halo-context-list">
+                {(contextSnapshot?.recent_searches ?? []).slice(0, 15).map((s, i) => (
+                  <li key={`${s.url}-${i}`} className="halo-context-item">
+                    <a href={s.url} target="_blank" rel="noopener noreferrer" className="halo-context-link">{s.query}</a>
+                  </li>
+                ))}
+                {(!contextSnapshot?.recent_searches?.length) && <li className="halo-context-empty">No recent searches</li>}
+              </ul>
+            </div>
+            <div className="halo-context-section">
+              <div className="halo-context-section-title">AI chat snippets</div>
+              <ul className="halo-context-list">
+                {contextSnapshot?.recent_ai_chats && Object.entries(contextSnapshot.recent_ai_chats).flatMap(([host, msgs]) =>
+                  ((msgs ?? []) as Array<{ role: string; text: string }>).slice(0, 5).map((m, i) => (
+                    <li key={`${host}-${i}`} className="halo-context-item halo-context-chat">
+                      <span className="halo-context-role">{m.role}:</span> {m.text.slice(0, 120)}{m.text.length > 120 ? "…" : ""}
+                    </li>
+                  ))
+                )}
+                {(!contextSnapshot?.recent_ai_chats || Object.keys(contextSnapshot.recent_ai_chats).length === 0) && (
+                  <li className="halo-context-empty">No AI chat snippets</li>
+                )}
+              </ul>
+            </div>
+          </div>
+          <button type="button" className="halo-btn halo-btn-suggest" onClick={suggestFromContext} disabled={isSuggesting}>
+            {isSuggesting ? "Suggesting…" : "Suggest"}
+          </button>
+          {suggestionText && (
+            <div className="halo-context-suggestion">
+              <div className="halo-context-suggestion-title">Next steps</div>
+              <div className="halo-context-suggestion-text">{suggestionText}</div>
             </div>
           )}
         </div>

@@ -2,6 +2,7 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import { HaloStrip } from "./halo";
 import { LiveCompanion } from "./live_companion";
+import { initChatCapture } from "./chat_capture";
 // Import CSS as a string for Shadow DOM injection
 import haloStyles from "./halo.css?inline";
 
@@ -61,6 +62,7 @@ function init() {
             <LiveCompanion />
           </>
         );
+        initChatCapture();
       } catch (error) {
         console.error("[cue] Failed to initialize Halo Strip:", error);
       }
@@ -75,6 +77,7 @@ function init() {
           <LiveCompanion />
         </>
       );
+      initChatCapture();
     } catch (error) {
       console.error("[cue] Failed to initialize Halo Strip:", error);
     }

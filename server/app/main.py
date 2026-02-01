@@ -15,10 +15,6 @@ from pydantic import BaseModel  # type: ignore[import-untyped]
 # #region agent log
 try:
     from app.agents.embeddings import generate_embedding
-    from app.agents.intent import analyze_intent
-    from app.agents.router import classify_intent
-    from app.agents.predictor import predict_next_step
-    from app.agents.implementation import execute_prediction
     from app.agents.prism import summarize_context
     from app.agents.scribe import process_audio_chunk
     from app.agents.ask_ai import ask_ai
@@ -40,7 +36,6 @@ except ImportError as e:
     raise
 # #endregion
 from app.db.repository import (
-    save_context_event,
     save_diagram_event,
     save_prism_summary,
     save_session,
@@ -158,14 +153,6 @@ async def startup_change_stream():
 
 # ================== REQUEST MODELS ==================
 
-class AnalyzeContextRequest(BaseModel):
-    current_url: str
-    page_title: Optional[str] = None
-    time_on_page: Optional[float] = None
-    tab_switch_rate: Optional[float] = None
-    scroll_depth: Optional[float] = None
-
-
 class SummarizeContextRequest(BaseModel):
     text: str
     source_url: Optional[str] = None
@@ -186,6 +173,11 @@ class AskAIRequest(BaseModel):
     selected_text: Optional[str] = None
     user_display_name: Optional[str] = None
     user_email: Optional[str] = None
+    context_blob: Optional[str] = None
+
+
+class SuggestRequest(BaseModel):
+    context_blob: Optional[str] = None
 
 
 class PoseRequest(BaseModel):
@@ -249,41 +241,6 @@ async def auth_google(payload: AuthGoogleRequest) -> Dict[str, Any]:
         )
 
 
-@app.post("/analyze_context")
-async def analyze_context(payload: AnalyzeContextRequest) -> Dict[str, Any]:
-    result = analyze_intent(payload.model_dump())
-    save_context_event(payload.model_dump(), result)
-    return result
-
-
-class AnalyzeTrajectoryRequest(BaseModel):
-    trajectory: List[Dict[str, Any]]
-    current_url: str
-
-
-@app.post("/analyze_trajectory")
-async def analyze_trajectory_endpoint(payload: AnalyzeTrajectoryRequest) -> Dict[str, Any]:
-    """Tab trajectory from extension. Router -> Predictor -> optional Implementation; broadcast nudge."""
-    intent_result = classify_intent(payload.trajectory, payload.current_url)
-    prediction = predict_next_step(
-        intent_result["intent"],
-        intent_result["confidence"],
-        payload.trajectory,
-        payload.current_url,
-    )
-    result = {"status": "ok", "intent": intent_result, "prediction": prediction}
-    if prediction.get("next_step") and prediction.get("confidence", 0) >= 0.8:
-        await dashboard_manager.broadcast({
-            "type": "PREDICTIVE_NUDGE",
-            "payload": {
-                "next_step": prediction["next_step"],
-                "mcp_tool": prediction.get("mcp_tool"),
-                "reasoning": prediction.get("reasoning"),
-            },
-        })
-    return result
-
-
 @app.post("/summarize_context")
 async def summarize_context_endpoint(
     payload: SummarizeContextRequest,
@@ -326,6 +283,7 @@ async def ask_ai_endpoint(payload: AskAIRequest) -> Dict[str, Any]:
         "selected_text": payload.selected_text or "",
         "user_display_name": payload.user_display_name or "",
         "user_email": payload.user_email or "",
+        "context_blob": payload.context_blob or "",
     }
     # Optional: include recent Google activity so the model is aware of recent actions
     try:
@@ -352,6 +310,29 @@ async def ask_ai_endpoint(payload: AskAIRequest) -> Dict[str, Any]:
     except Exception:
         context["recent_activity"] = ""
     result = ask_ai(payload.query, context)
+    return result
+
+
+@app.post("/suggest")
+async def suggest_endpoint(payload: SuggestRequest) -> Dict[str, Any]:
+    """Suggest next steps from context (recent searches + AI chat snippets)."""
+    context_blob = (payload.context_blob or "").strip()
+    if not context_blob:
+        return {"success": False, "error": "No context provided"}
+    query = (
+        "Based on the following context (recent searches and AI chat snippets), "
+        "suggest 1-3 concrete next steps I could take. Be brief and actionable."
+    )
+    context = {
+        "page_title": "",
+        "current_url": "",
+        "selected_text": "",
+        "user_display_name": "",
+        "user_email": "",
+        "context_blob": context_blob,
+        "recent_activity": "",
+    }
+    result = ask_ai(query, context)
     return result
 
 

@@ -19,6 +19,7 @@ def ask_ai(query: str, context: Dict[str, Any]) -> Dict[str, Any]:
     user_display_name = context.get("user_display_name", "")
     user_email = context.get("user_email", "")
     recent_activity = context.get("recent_activity", "")
+    context_blob = context.get("context_blob", "")
 
     context_text = f"You are on: {page_title}\nURL: {current_url}"
     if selected_text:
@@ -27,6 +28,8 @@ def ask_ai(query: str, context: Dict[str, Any]) -> Dict[str, Any]:
         context_text += f"\nUser: {user_display_name or 'unknown'}" + (f" ({user_email})" if user_email else "")
     if recent_activity:
         context_text += f"\nRecent Google activity: {recent_activity}"
+    if context_blob:
+        context_text += f"\n\nExplicit user context (recent searches / AI chat snippets):\n{str(context_blob)[:8000]}"
 
     prompt = f"{context_text}\n\nUser's question: {query}\n\nProvide a helpful answer."
     

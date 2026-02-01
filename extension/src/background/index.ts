@@ -1,3 +1,14 @@
+import {
+  getCueContext,
+  setRecentSearches,
+  addRecentSearch,
+  clearCueContext,
+  buildContextBlob,
+  mergeChatMessages,
+  type CueContext,
+  type SearchEntry,
+} from "../shared/context_store";
+
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 const WS_BASE = import.meta.env.VITE_WS_BASE_URL || "ws://localhost:8000";
 
@@ -84,59 +95,74 @@ async function getFreshToken(): Promise<string | null> {
   }
 }
 
-// ================== Tab Trajectory (Predictive Memory) ==================
+// ================== Context Store (GetContext) ==================
 
-const TAB_TRAJECTORY_MAX = 10;
-type TabTrajectoryItem = { url: string; title: string; timestamp: number; timeOnPage?: number };
-let tabTrajectory: TabTrajectoryItem[] = [];
-let tabTrajectoryTimers: Record<number, ReturnType<typeof setTimeout>> = {};
-const TRAJECTORY_PAUSE_MS = 30000;
-
-function pushTabTrajectory(url: string, title: string, tabId?: number) {
-  const now = Date.now();
-  if (tabTrajectory.length > 0 && tabTrajectory[tabTrajectory.length - 1].url === url) return;
-  tabTrajectory.push({ url, title, timestamp: now });
-  if (tabTrajectory.length > TAB_TRAJECTORY_MAX) tabTrajectory.shift();
-  if (tabId != null) {
-    if (tabTrajectoryTimers[tabId]) clearTimeout(tabTrajectoryTimers[tabId]);
-    tabTrajectoryTimers[tabId] = setTimeout(() => {
-      analyzeTrajectory(url);
-      delete tabTrajectoryTimers[tabId];
-    }, TRAJECTORY_PAUSE_MS);
-  }
-}
-
-async function analyzeTrajectory(currentUrl: string) {
+function inferSearchEngine(url: string): string | undefined {
   try {
-    const res = await fetch(`${API_BASE}/analyze_trajectory`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ trajectory: tabTrajectory, current_url: currentUrl }),
-    });
-    const data = await res.json();
-    const prediction = data?.prediction;
-    if (prediction?.next_step && (prediction?.confidence ?? 0) >= 0.8) {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (tab?.id) {
-        chrome.tabs.sendMessage(tab.id, {
-          type: "PREDICTIVE_NUDGE",
-          payload: {
-            next_step: prediction.next_step,
-            mcp_tool: prediction.mcp_tool,
-            reasoning: prediction.reasoning,
-          },
-        });
-      }
-    }
-  } catch (e) {
-    console.warn("[cue] analyze_trajectory failed:", e);
+    const u = new URL(url);
+    const host = u.hostname.toLowerCase();
+    if (host.includes("google.")) return "Google";
+    if (host.includes("bing.")) return "Bing";
+    if (host.includes("duckduckgo.")) return "DuckDuckGo";
+    if (host.includes("yahoo.")) return "Yahoo";
+    if (host.includes("ecosia.")) return "Ecosia";
+    return undefined;
+  } catch {
+    return undefined;
   }
 }
 
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status === "complete" && tab.url && !tab.url.startsWith("chrome://")) {
-    pushTabTrajectory(tab.url, tab.title || "", tabId);
+function extractSearchQueryFromUrl(url: string): string | null {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.toLowerCase();
+    const q = u.searchParams.get("q") || u.searchParams.get("query") || u.searchParams.get("p") || u.searchParams.get("text");
+    if (q && q.trim()) return q.trim();
+    if (host.includes("google.")) return u.searchParams.get("q")?.trim() ?? null;
+    if (host.includes("bing.")) return u.searchParams.get("q")?.trim() ?? null;
+    if (host.includes("duckduckgo.")) return u.searchParams.get("q")?.trim() ?? null;
+    if (host.includes("yahoo.")) return u.searchParams.get("p")?.trim() ?? null;
+    return null;
+  } catch {
+    return null;
   }
+}
+
+async function refreshRecentSearchesFromHistory(): Promise<CueContext> {
+  const maxItems = 50;
+  const items = await new Promise<chrome.history.HistoryItem[]>((resolve) => {
+    chrome.history.search({ text: "", maxResults: 200, startTime: 0 }, resolve);
+  });
+  const entries: SearchEntry[] = [];
+  const seen = new Set<string>();
+  for (const item of items) {
+    if (!item.url) continue;
+    const query = extractSearchQueryFromUrl(item.url);
+    if (!query) continue;
+    const key = `${query}@@${item.url}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    entries.push({
+      query,
+      url: item.url,
+      engine: inferSearchEngine(item.url),
+      visitedAt: item.lastVisitTime ?? Date.now(),
+    });
+    if (entries.length >= maxItems) break;
+  }
+  return setRecentSearches(entries, maxItems);
+}
+
+chrome.history.onVisited.addListener(async (item) => {
+  if (!item.url) return;
+  const query = extractSearchQueryFromUrl(item.url);
+  if (!query) return;
+  await addRecentSearch({
+    query,
+    url: item.url,
+    engine: inferSearchEngine(item.url),
+    visitedAt: item.lastVisitTime ?? Date.now(),
+  });
 });
 
 // Session Audio Capture is now handled directly in content script (session_recorder.ts)
@@ -522,6 +548,60 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true; // Indicates we will send a response asynchronously
   }
 
+  // Context (GetContext)
+  if (message.type === "CONTEXT_GET_SNAPSHOT") {
+    getCueContext().then((ctx) => sendResponse({ success: true, snapshot: ctx })).catch((e) => sendResponse({ success: false, error: String(e) }));
+    return true;
+  }
+  if (message.type === "CONTEXT_REFRESH_SEARCHES") {
+    refreshRecentSearchesFromHistory().then((ctx) => sendResponse({ success: true, snapshot: ctx })).catch((e) => sendResponse({ success: false, error: String(e) }));
+    return true;
+  }
+  if (message.type === "CONTEXT_CLEAR") {
+    clearCueContext().then(() => sendResponse({ success: true })).catch((e) => sendResponse({ success: false, error: String(e) }));
+    return true;
+  }
+  if (message.type === "CONTEXT_SAVE_CHAT_MESSAGES") {
+    const { hostname, url, messages } = message.payload || {};
+    if (!hostname || !Array.isArray(messages)) {
+      sendResponse({ success: false, error: "Missing hostname or messages" });
+      return true;
+    }
+    mergeChatMessages(
+      hostname,
+      messages.map((m: { role?: string; text: string }) => ({ role: (m.role || "unknown") as "user" | "assistant" | "system" | "unknown", text: m.text, url })),
+    )
+      .then(() => sendResponse({ success: true }))
+      .catch((e) => sendResponse({ success: false, error: String(e) }));
+    return true;
+  }
+  if (message.type === "CONTEXT_SUGGEST") {
+    (async () => {
+      try {
+        const ctx = await getCueContext();
+        const blob = buildContextBlob(ctx);
+        if (!blob.trim()) {
+          sendResponse({ success: false, error: "No context to suggest from" });
+          return;
+        }
+        const res = await fetch(`${API_BASE}/suggest`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ context_blob: blob }),
+        });
+        const data = await res.json();
+        if (data.success && data.answer) {
+          sendResponse({ success: true, suggestion: data.answer });
+        } else {
+          sendResponse({ success: false, error: data.error || "Suggest failed" });
+        }
+      } catch (e: any) {
+        sendResponse({ success: false, error: e?.message || "Suggest failed" });
+      }
+    })();
+    return true;
+  }
+
   // Ask AI (with @mention command support)
   if (message.type === "ASK_AI") {
     (async () => {
@@ -572,6 +652,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           }
         } else {
           // Regular Ask AI request
+          let contextBlob = "";
+          if (message.includeContext) {
+            const ctx = await getCueContext();
+            contextBlob = buildContextBlob(ctx);
+          }
           const context = {
             query,
             page_title: tab?.title ?? "",
@@ -579,6 +664,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             selected_text: message.selectedText ?? "",
             user_display_name: message.userDisplayName ?? "",
             user_email: message.userEmail ?? "",
+            context_blob: contextBlob || undefined,
           };
 
           const response = await fetch(`${API_BASE}/ask_ai`, {
