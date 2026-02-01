@@ -144,6 +144,8 @@ class AskAIRequest(BaseModel):
     page_title: Optional[str] = None
     current_url: Optional[str] = None
     selected_text: Optional[str] = None
+    # Extra context sent explicitly by the user/client (e.g. recent searches / chat snippets)
+    context_blob: Optional[str] = None
 
 
 class PoseRequest(BaseModel):
@@ -219,6 +221,7 @@ async def ask_ai_endpoint(payload: AskAIRequest) -> Dict[str, Any]:
         "page_title": payload.page_title or "",
         "current_url": payload.current_url or "",
         "selected_text": payload.selected_text or "",
+        "context_blob": (payload.context_blob or ""),
     }
     result = ask_ai(payload.query, context)
     return result

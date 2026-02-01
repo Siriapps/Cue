@@ -15,10 +15,16 @@ def ask_ai(query: str, context: Dict[str, Any]) -> Dict[str, Any]:
     page_title = context.get("page_title", "")
     current_url = context.get("current_url", "")
     selected_text = context.get("selected_text", "")
+    context_blob = context.get("context_blob", "")
     
     context_text = f"You are on: {page_title}\nURL: {current_url}"
     if selected_text:
         context_text += f"\nSelected text: {selected_text[:500]}"
+
+    if context_blob:
+        # Explicitly provided context from the client (e.g. recent searches / AI chat snippets).
+        # Keep it bounded to avoid excessively large prompts.
+        context_text += f"\n\nExplicit user context:\n{str(context_blob)[:8000]}"
     
     prompt = f"{context_text}\n\nUser's question: {query}\n\nProvide a helpful answer."
     
