@@ -1,5 +1,5 @@
-const API_BASE = "http://localhost:8000";
-const WS_BASE = "ws://localhost:8000";
+const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+const WS_BASE = import.meta.env.VITE_WS_BASE_URL || "ws://localhost:8000";
 
 // Go Live state
 let mediaRecorder: MediaRecorder | null = null;
@@ -54,6 +54,34 @@ async function logoutGoogle(): Promise<void> {
 async function isLoggedIn(): Promise<boolean> {
   const stored = await chrome.storage.local.get(["googleToken"]);
   return !!stored.googleToken;
+}
+
+// Get a fresh token (refreshes if needed)
+async function getFreshToken(): Promise<string | null> {
+  try {
+    // Always get a fresh token from Chrome identity to ensure it's valid
+    const result = await chrome.identity.getAuthToken({ interactive: false });
+    const token: string | undefined =
+      typeof result === "string" ? result : (result as { token?: string })?.token;
+
+    if (token) {
+      // Update stored token
+      await chrome.storage.local.set({
+        googleToken: token,
+        tokenTimestamp: Date.now(),
+      });
+      console.log("[cue] Fresh token obtained");
+      return token;
+    }
+
+    // If no token and not interactive, try interactive login
+    console.log("[cue] No cached token, attempting interactive login");
+    const loginResult = await loginWithGoogle();
+    return loginResult.token || null;
+  } catch (error: any) {
+    console.error("[cue] Failed to get fresh token:", error);
+    return null;
+  }
 }
 
 // ================== Tab Trajectory (Predictive Memory) ==================
@@ -509,9 +537,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           const service = mentionMatch[1].toLowerCase();
           const command = mentionMatch[2];
 
-          // Get stored token for authentication
-          const stored = await chrome.storage.local.get(["googleToken"]);
-          const userToken = stored.googleToken || "";
+          // Get fresh token for authentication (ensures token is valid)
+          const userToken = message.confirm ? await getFreshToken() : (await chrome.storage.local.get(["googleToken"])).googleToken || "";
 
           const response = await fetch(`${API_BASE}/execute_command`, {
             method: "POST",
@@ -579,8 +606,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     (async () => {
       try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        const stored = await chrome.storage.local.get(["googleToken"]);
-        const userToken = stored.googleToken || "";
+        // Get fresh token to ensure it's valid
+        const userToken = await getFreshToken();
+
+        if (!userToken) {
+          sendResponse({ success: false, error: "Please sign in with Google first.", requires_auth: true });
+          if (tab?.id) {
+            chrome.tabs.sendMessage(tab.id, {
+              type: "COMMAND_EXECUTED",
+              payload: { success: false, error: "Please sign in with Google first." },
+            });
+          }
+          return;
+        }
 
         const response = await fetch(`${API_BASE}/execute_command`, {
           method: "POST",

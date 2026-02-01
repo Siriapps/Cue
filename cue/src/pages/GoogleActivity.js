@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { config } from '../config';
 
-const ADK_API_URL = 'http://localhost:8000';
+const ADK_API_URL = config.API_BASE_URL;
 
 function GoogleActivity({ lastActivityUpdate = 0 }) {
   const [activities, setActivities] = useState([]);
@@ -50,7 +51,12 @@ function GoogleActivity({ lastActivityUpdate = 0 }) {
     return () => document.removeEventListener('visibilitychange', onVisibility);
   }, [fetchActivities]);
 
-  const counts = activities.reduce((acc, a) => {
+  // Do not show draft generation in activity (only sent/created actions)
+  const filteredActivities = activities.filter(
+    (a) => !(a.service === 'gmail' && a.action === 'create_draft')
+  );
+
+  const counts = filteredActivities.reduce((acc, a) => {
     const s = a.service || 'other';
     acc[s] = (acc[s] || 0) + 1;
     return acc;

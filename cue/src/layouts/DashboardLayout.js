@@ -10,7 +10,7 @@ function DashboardLayout({ user, children, searchQuery, setSearchQuery, dashboar
 
   const handleLogout = () => {
     clearAuth();
-    window.location.href = 'http://localhost:3002/login';
+    navigate('/login');
   };
 
   const handleRecordNew = () => {

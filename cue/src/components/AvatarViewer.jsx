@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { config } from '../config';
 
 // CSS-based 3D Avatar using transforms
 // No Three.js dependency - works everywhere
@@ -407,7 +408,7 @@ export function PosePresetViewer({ presetName = 't_pose' }) {
   const [pose, setPose] = useState(null);
 
   useEffect(() => {
-    fetch(`http://localhost:8000/pose`, {
+    fetch(`${config.API_BASE_URL}/pose`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ pose_name: presetName }),

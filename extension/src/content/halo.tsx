@@ -3,7 +3,7 @@ import { startGoLive, stopGoLive } from "./go_live";
 import { summarizePage } from "./readability";
 import { startMicRecording, pauseMicRecording, resumeMicRecording, stopMicRecording } from "./session_recorder";
 
-const LIBRARY_URL = "http://localhost:3001";
+const LIBRARY_URL = import.meta.env.VITE_LIBRARY_URL || "http://localhost:3001";
 
 type SessionState = "idle" | "recording" | "paused";
 
@@ -84,7 +84,8 @@ export function HaloStrip(): React.JSX.Element {
       if (message.type === "COMMAND_EXECUTED" && message.payload) {
         const p = message.payload as { success?: boolean; message?: string; error?: string };
         if (p.success) {
-          setAiAnswer(`Done: ${p.message || "Command executed"}`);
+          const msg = (p.message || "").trim();
+          setAiAnswer(msg ? (msg.toLowerCase() === "done" ? "Command completed." : msg) : "Command completed.");
         } else {
           setAiAnswer(`Error: ${p.error || "Command failed"}`);
         }
@@ -284,7 +285,8 @@ export function HaloStrip(): React.JSX.Element {
             return;
           }
           if (response?.success) {
-            setAiAnswer(`Done: ${response.message || "Command executed"}`);
+            const msg = (response.message || "").trim();
+            setAiAnswer(msg ? (msg.toLowerCase() === "done" ? "Command completed." : msg) : "Command completed.");
           } else {
             setAiAnswer(`Error: ${response?.error || "Command failed"}`);
           }

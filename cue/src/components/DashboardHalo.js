@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { config } from '../config';
 
 /**
  * DashboardHalo - Top bar for the dashboard matching the extension halo strip style
@@ -9,7 +10,7 @@ function DashboardHalo({ user }) {
   const [aiAnswer, setAiAnswer] = useState(null);
   const [isThinking, setIsThinking] = useState(false);
 
-  const ADK_API_URL = 'http://localhost:8000';
+  const ADK_API_URL = config.API_BASE_URL;
 
   const handleAsk = async () => {
     if (!query.trim()) return;

@@ -4,6 +4,7 @@ import asyncio
 from typing import Any, Dict, List, Optional, Set
 from datetime import datetime
 
+from pathlib import Path
 from dotenv import load_dotenv  # type: ignore[import-untyped]
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request  # type: ignore[import-untyped]
 from fastapi.middleware.cors import CORSMiddleware  # type: ignore[import-untyped]
@@ -52,7 +53,9 @@ from app.db.repository import (
     list_google_activity_recent,
 )
 
-load_dotenv()
+# Load environment variables from root .env
+root_env_path = Path(__file__).resolve().parent.parent.parent / '.env'
+load_dotenv(root_env_path)
 
 app = FastAPI(title="cue ADK API")
 
@@ -904,46 +907,59 @@ Return ONLY the JSON object, no markdown or explanation."""
 
     # Execute mode - call MCP tools
     if not user_token:
+        print(f"[cue] execute_command: No token provided for {service}/{action}")
         return {
             "success": False,
             "error": "Authentication required. Please sign in with Google first.",
             "requires_auth": True,
         }
 
+    print(f"[cue] execute_command: Executing {service}/{action} with token (length={len(user_token)})")
     result = {"success": False, "error": "Action not implemented"}
+
+    # Helper to check if MCP result is an error (MCP servers return "Error: ..." strings on failure)
+    def wrap_mcp_result(mcp_result: str, success_message: str, result_key: str = "result") -> Dict[str, Any]:
+        if isinstance(mcp_result, str) and mcp_result.startswith("Error:"):
+            error_msg = mcp_result[6:].strip()  # Remove "Error:" prefix
+            print(f"[cue] MCP error: {error_msg}")
+            return {"success": False, "error": error_msg}
+        return {"success": True, "message": success_message, result_key: mcp_result}
 
     try:
         if service == "gmail":
             from app.mcp import gmail_server
             if action == "draft":
                 # New draft: To/Subject as headers, body as email content only
-                result = gmail_server.create_draft(
+                mcp_result = gmail_server.create_draft(
                     user_token=user_token,
                     to=params.get("to", "").strip(),
                     subject=params.get("subject", "").strip(),
                     body=(params.get("body", "") or "").strip(),
                 )
-                result = {"success": True, "message": "Draft created", "result": result}
+                result = wrap_mcp_result(mcp_result, "Draft created", "draft_id")
             elif action == "send":
-                result = gmail_server.send_email(
+                mcp_result = gmail_server.send_email(
                     user_token=user_token,
                     to=params.get("to", ""),
                     subject=params.get("subject", ""),
                     body=params.get("body", ""),
                 )
-                result = {"success": True, "message": "Email sent", "result": result}
+                result = wrap_mcp_result(mcp_result, "Email sent", "message_id")
             elif action == "list":
-                result = gmail_server.list_emails(
+                mcp_result = gmail_server.list_emails(
                     user_token=user_token,
                     query=params.get("query", ""),
                     max_results=params.get("max_results", 10),
                 )
-                result = {"success": True, "emails": result}
+                if isinstance(mcp_result, str) and mcp_result.startswith("Error:"):
+                    result = {"success": False, "error": mcp_result[6:].strip()}
+                else:
+                    result = {"success": True, "emails": mcp_result}
 
         elif service == "calendar":
             from app.mcp import calendar_server
             if action == "create":
-                result = calendar_server.create_event(
+                mcp_result = calendar_server.create_event(
                     user_token=user_token,
                     summary=params.get("title", params.get("summary", "")),
                     start=params.get("start", params.get("date", "") + "T" + params.get("time", "09:00:00")),
@@ -951,80 +967,95 @@ Return ONLY the JSON object, no markdown or explanation."""
                     description=params.get("description", ""),
                     attendees=params.get("attendees", []),
                 )
-                result = {"success": True, "message": "Event created", "result": result}
+                result = wrap_mcp_result(mcp_result, "Event created", "event_id")
             elif action == "list":
-                result = calendar_server.list_events(
+                mcp_result = calendar_server.list_events(
                     user_token=user_token,
                     time_min=params.get("time_min", ""),
                     time_max=params.get("time_max", ""),
                     max_results=params.get("max_results", 10),
                 )
-                result = {"success": True, "events": result}
+                if isinstance(mcp_result, str) and mcp_result.startswith("Error:"):
+                    result = {"success": False, "error": mcp_result[6:].strip()}
+                else:
+                    result = {"success": True, "events": mcp_result}
 
         elif service == "tasks":
             from app.mcp import tasks_server
             if action == "add":
-                result = tasks_server.create_task(
+                mcp_result = tasks_server.create_task(
                     user_token=user_token,
                     title=params.get("title", ""),
                     notes=params.get("notes", ""),
                     due=params.get("due", ""),
                 )
-                result = {"success": True, "message": "Task created", "result": result}
+                result = wrap_mcp_result(mcp_result, "Task created", "task_id")
             elif action == "list":
-                result = tasks_server.list_tasks(
+                mcp_result = tasks_server.list_tasks(
                     user_token=user_token,
                     task_list=params.get("task_list", "@default"),
                 )
-                result = {"success": True, "tasks": result}
+                if isinstance(mcp_result, str) and mcp_result.startswith("Error:"):
+                    result = {"success": False, "error": mcp_result[6:].strip()}
+                else:
+                    result = {"success": True, "tasks": mcp_result}
             elif action == "complete":
-                result = tasks_server.complete_task(
+                mcp_result = tasks_server.complete_task(
                     user_token=user_token,
                     task_id=params.get("task_id", ""),
                 )
-                result = {"success": True, "message": "Task completed", "result": result}
+                result = wrap_mcp_result(mcp_result, "Task completed", "result")
 
         elif service == "docs":
             from app.mcp import docs_server
             if action == "create":
-                result = docs_server.create_document(
+                mcp_result = docs_server.create_document(
                     user_token=user_token,
                     title=params.get("title", "Untitled Document"),
                     content=params.get("content", ""),
                 )
-                result = {"success": True, "message": "Document created", "result": result}
+                result = wrap_mcp_result(mcp_result, "Document created", "doc_id")
             elif action == "read":
-                result = docs_server.read_document(
+                mcp_result = docs_server.read_document(
                     user_token=user_token,
                     doc_id=params.get("doc_id", ""),
                 )
-                result = {"success": True, "document": result}
+                if isinstance(mcp_result, str) and mcp_result.startswith("Error:"):
+                    result = {"success": False, "error": mcp_result[6:].strip()}
+                else:
+                    result = {"success": True, "document": mcp_result}
 
         elif service == "drive":
             from app.mcp import drive_server
             if action == "list" or action == "find":
-                result = drive_server.list_files(
+                mcp_result = drive_server.list_files(
                     user_token=user_token,
                     query=params.get("query", ""),
                     max_results=params.get("max_results", 10),
                 )
-                result = {"success": True, "files": result}
+                if isinstance(mcp_result, str) and mcp_result.startswith("Error:"):
+                    result = {"success": False, "error": mcp_result[6:].strip()}
+                else:
+                    result = {"success": True, "files": mcp_result}
 
         elif service == "sheets":
             from app.mcp import sheets_server
             if action == "create":
-                result = sheets_server.create_sheet(
+                mcp_result = sheets_server.create_sheet(
                     user_token=user_token,
                     title=params.get("title", "Untitled Spreadsheet"),
                 )
-                result = {"success": True, "message": "Spreadsheet created", "result": result}
+                result = wrap_mcp_result(mcp_result, "Spreadsheet created", "sheet_id")
             elif action == "read":
-                result = sheets_server.read_sheet(
+                mcp_result = sheets_server.read_sheet(
                     user_token=user_token,
                     sheet_id=params.get("sheet_id", ""),
                     range_name=params.get("range", "A1:Z100"),
                 )
-                result = {"success": True, "data": result}
+                if isinstance(mcp_result, str) and mcp_result.startswith("Error:"):
+                    result = {"success": False, "error": mcp_result[6:].strip()}
+                else:
+                    result = {"success": True, "data": mcp_result}
 
         # Log the activity
         log_google_activity({

@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
+import { config } from '../config';
 
-const ADK_API_URL = 'http://localhost:8000';
+const ADK_API_URL = config.API_BASE_URL;
 
 function MosaicField() {
   const [sessions, setSessions] = useState([]);

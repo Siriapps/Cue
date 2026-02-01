@@ -23,10 +23,13 @@ import DashboardLayout from './layouts/DashboardLayout';
 // Auth
 import { getStoredUser, storeAuth, handleOAuthRedirect } from './auth/googleAuth';
 
+// Config
+import { config } from './config';
+
 import './App.css';
 
-const ADK_API_URL = 'http://localhost:8000';
-const WS_URL = 'ws://localhost:8000';
+const ADK_API_URL = config.API_BASE_URL;
+const WS_URL = config.WS_BASE_URL;
 
 function App() {
   // Auth state
@@ -57,6 +60,8 @@ function App() {
 
   // Time tick for updating relative times
   const [timeTick, setTimeTick] = useState(() => Date.now());
+  // Activity page refetches when server broadcasts ACTIVITY_UPDATE (no timer polling)
+  const [lastActivityUpdate, setLastActivityUpdate] = useState(0);
 
   const navigate = useNavigate();
 
@@ -683,6 +688,7 @@ function App() {
         <Route path="/library" element={<ProtectedRoute><LibraryContent /></ProtectedRoute>} />
         <Route path="/avatar" element={<ProtectedRoute><AvatarContent /></ProtectedRoute>} />
         <Route path="/reels" element={<ProtectedRoute><div className="sessions-container reels-container-wrapper"><ReelsFeed reels={reels} /></div></ProtectedRoute>} />
+        {/* eslint-disable-next-line no-undef -- lastActivityUpdate from useState (line 61) */}
         <Route path="/activity" element={<ProtectedRoute><GoogleActivity lastActivityUpdate={lastActivityUpdate} /></ProtectedRoute>} />
         <Route path="/mosaic" element={<ProtectedRoute><MosaicField /></ProtectedRoute>} />
         <Route path="/orbit" element={<ProtectedRoute><DailyOrbit /></ProtectedRoute>} />
