@@ -3,7 +3,7 @@
   "name": "cue - AI Workspace",
   "version": "0.0.1",
   "description": "Intent-aware Halo Strip with Go Live and Prism features.",
-  "permissions": ["tabs", "activeTab", "storage", "tabCapture", "offscreen"],
+  "permissions": ["tabs", "activeTab", "storage", "history", "tabCapture", "offscreen"],
   "host_permissions": ["<all_urls>", "https://generativelanguage.googleapis.com/*", "http://localhost:8000/*", "http://localhost:3001/*"],
   "background": {
     "service_worker": "background.js"

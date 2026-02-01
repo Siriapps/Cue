@@ -318,6 +318,18 @@
   box-shadow: 0 4px 12px rgba(168, 85, 247, 0.4);
 }
 
+/* Context Button - Blue */
+.halo-btn.context {
+  background: linear-gradient(135deg, #0ea5e9 0%, #2563eb 100%);
+  color: white;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.25);
+}
+
+.halo-btn.context:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.35);
+}
+
 /* Chat Panel - Liquid Glass */
 .halo-chat {
   position: fixed;
@@ -343,6 +355,100 @@
     0 12px 40px rgba(0, 0, 0, 0.12),
     0 4px 12px rgba(0, 0, 0, 0.06),
     inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+/* Context Panel uses the same base as halo-chat */
+.halo-context {
+  width: 460px;
+  max-height: 70vh;
+  overflow: auto;
+}
+
+.context-row {
+  display: flex;
+  align-items: center;
+}
+
+.context-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: #374151;
+}
+
+.context-toggle input {
+  width: 16px;
+  height: 16px;
+}
+
+.context-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.halo-btn.context-action {
+  background: rgba(0, 0, 0, 0.06);
+  color: #374151;
+  box-shadow: none;
+  padding: 10px 14px;
+}
+
+.halo-btn.context-action:hover {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.context-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.context-section-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #111827;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.context-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.context-item {
+  font-size: 13px;
+  color: #374151;
+  line-height: 1.4;
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+
+.context-empty {
+  font-size: 13px;
+  color: #6b7280;
+  font-style: italic;
+}
+
+.context-host-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.context-host {
+  font-size: 12px;
+  font-weight: 700;
+  color: #2563eb;
+}
+
+.context-role {
+  font-weight: 700;
 }
 
 @keyframes slide-down {

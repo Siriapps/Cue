@@ -2,8 +2,10 @@ import React, { useEffect, useMemo, useState, useCallback, useRef } from "react"
 import { startGoLive, stopGoLive } from "./go_live";
 import { summarizePage } from "./readability";
 import { startMicRecording, pauseMicRecording, resumeMicRecording, stopMicRecording } from "./session_recorder";
+import type { CueContext } from "../shared/context_store";
 
 const LIBRARY_URL = "http://localhost:3001";
+const INCLUDE_CONTEXT_STORAGE_KEY = "cue_include_context_for_ai_v1";
 
 type SessionState = "idle" | "recording" | "paused";
 
@@ -11,9 +13,16 @@ export function HaloStrip(): React.JSX.Element {
   // UI State
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
+  const [contextOpen, setContextOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [aiAnswer, setAiAnswer] = useState<string | null>(null);
   const [isThinking, setIsThinking] = useState(false);
+
+  // Local context UI
+  const [contextSnapshot, setContextSnapshot] = useState<CueContext | null>(null);
+  const [includeContextForAI, setIncludeContextForAI] = useState(false);
+  const [suggestionText, setSuggestionText] = useState<string | null>(null);
+  const [isSuggesting, setIsSuggesting] = useState(false);
 
   // Session Recording State
   const [sessionState, setSessionState] = useState<SessionState>("idle");
@@ -24,19 +33,38 @@ export function HaloStrip(): React.JSX.Element {
   // Go Live State
   const [isLive, setIsLive] = useState(false);
 
-  // Load collapsed state from storage
+  const loadContextSnapshot = useCallback(() => {
+    try {
+      if (!chrome?.runtime?.id) {
+        throw new Error("Extension context invalidated");
+      }
+      chrome.runtime.sendMessage({ type: "CONTEXT_GET_SNAPSHOT" }, (response) => {
+        if (chrome.runtime.lastError) return;
+        if (response?.success && response?.context) {
+          setContextSnapshot(response.context as CueContext);
+        }
+      });
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  // Load collapsed state + include-context preference
   useEffect(() => {
     try {
       if (!chrome?.storage?.local) {
         throw new Error("Extension context invalidated");
       }
-      chrome.storage.local.get(["haloCollapsed"], (result) => {
+      chrome.storage.local.get(["haloCollapsed", INCLUDE_CONTEXT_STORAGE_KEY], (result) => {
         if (chrome.runtime.lastError) {
           console.error("[cue] Failed to load collapsed state:", chrome.runtime.lastError.message);
           return;
         }
         if (result.haloCollapsed !== undefined) {
           setIsCollapsed(result.haloCollapsed);
+        }
+        if (result[INCLUDE_CONTEXT_STORAGE_KEY] !== undefined) {
+          setIncludeContextForAI(!!result[INCLUDE_CONTEXT_STORAGE_KEY]);
         }
       });
     } catch (error: any) {
@@ -105,6 +133,90 @@ export function HaloStrip(): React.JSX.Element {
     }
   };
 
+  const toggleContext = () => {
+    setContextOpen((prev) => {
+      const next = !prev;
+      if (next) {
+        loadContextSnapshot();
+      } else {
+        setSuggestionText(null);
+        setIsSuggesting(false);
+      }
+      return next;
+    });
+  };
+
+  const setIncludeContextPreference = (next: boolean) => {
+    setIncludeContextForAI(next);
+    try {
+      if (!chrome?.storage?.local) {
+        throw new Error("Extension context invalidated");
+      }
+      chrome.storage.local.set({ [INCLUDE_CONTEXT_STORAGE_KEY]: next }, () => {
+        // ignore
+      });
+    } catch {
+      // ignore
+    }
+  };
+
+  const refreshSearches = () => {
+    try {
+      if (!chrome?.runtime?.id) {
+        throw new Error("Extension context invalidated");
+      }
+      chrome.runtime.sendMessage({ type: "CONTEXT_REFRESH_SEARCHES" }, (response) => {
+        if (chrome.runtime.lastError) return;
+        if (response?.success && response?.context) {
+          setContextSnapshot(response.context as CueContext);
+        }
+      });
+    } catch {
+      // ignore
+    }
+  };
+
+  const clearContext = () => {
+    try {
+      if (!chrome?.runtime?.id) {
+        throw new Error("Extension context invalidated");
+      }
+      chrome.runtime.sendMessage({ type: "CONTEXT_CLEAR" }, (response) => {
+        if (chrome.runtime.lastError) return;
+        if (response?.success && response?.context) {
+          setContextSnapshot(response.context as CueContext);
+        }
+      });
+    } catch {
+      // ignore
+    }
+  };
+
+  const suggestFromContext = () => {
+    setIsSuggesting(true);
+    setSuggestionText(null);
+    try {
+      if (!chrome?.runtime?.id) {
+        throw new Error("Extension context invalidated");
+      }
+      chrome.runtime.sendMessage({ type: "CONTEXT_SUGGEST" }, (response) => {
+        setIsSuggesting(false);
+        if (chrome.runtime.lastError) {
+          setSuggestionText("Extension context invalidated. Please reload the page.");
+          return;
+        }
+        if (response?.success && response?.answer) {
+          setSuggestionText(response.answer);
+        } else {
+          setSuggestionText(response?.error || "Failed to generate suggestions");
+        }
+      });
+    } catch (e: any) {
+      setIsSuggesting(false);
+      setSuggestionText(e?.message || "Failed to generate suggestions");
+    }
+  };
+
   const openLibrary = () => {
     try {
       if (!chrome?.runtime?.id) {
@@ -151,6 +263,7 @@ export function HaloStrip(): React.JSX.Element {
           type: "ASK_AI",
           query: currentQuery,
           selectedText: selectedText.substring(0, 500),
+          includeContext: includeContextForAI,
         },
         (response) => {
           setIsThinking(false);
@@ -471,6 +584,14 @@ export function HaloStrip(): React.JSX.Element {
           <span>{isLive ? "Live" : "Go Live"}</span>
         </button>
 
+        {/* Context Button */}
+        <button className="halo-btn context" onClick={toggleContext}>
+          <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+            <path d="M12 2a10 10 0 1 0 10 10A10.011 10.011 0 0 0 12 2Zm1 14.93V18h-2v-1.07A8.006 8.006 0 0 1 4.07 13H6.1A6.002 6.002 0 0 0 11 15.9V13h2v2.9A6.002 6.002 0 0 0 17.9 13h2.03A8.006 8.006 0 0 1 13 16.93ZM13 11h-2V6h2Z"/>
+          </svg>
+          <span>Context</span>
+        </button>
+
         {/* Ask AI Button */}
         <button className="halo-btn ask-ai" onClick={toggleChat}>
           <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
@@ -537,6 +658,92 @@ export function HaloStrip(): React.JSX.Element {
           {aiAnswer && !isThinking && (
             <div className="halo-answer">
               <div className="halo-answer-text">{aiAnswer}</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Context Panel */}
+      {contextOpen && (
+        <div className="halo-chat halo-context">
+          <div className="halo-chat-header">
+            <span>Context</span>
+            <button className="halo-close" onClick={toggleContext}>×</button>
+          </div>
+
+          <div className="context-row">
+            <label className="context-toggle">
+              <input
+                type="checkbox"
+                checked={includeContextForAI}
+                onChange={(e) => setIncludeContextPreference(e.target.checked)}
+              />
+              <span>Include context when I ask AI</span>
+            </label>
+          </div>
+
+          <div className="context-actions">
+            <button className="halo-btn context-action" onClick={refreshSearches}>
+              Refresh searches
+            </button>
+            <button className="halo-btn context-action" onClick={clearContext}>
+              Clear
+            </button>
+            <button className="halo-btn send-btn" onClick={suggestFromContext}>
+              Suggest
+            </button>
+          </div>
+
+          <div className="context-section">
+            <div className="context-section-title">Recent searches</div>
+            <div className="context-list">
+              {(contextSnapshot?.recent_searches || []).slice(0, 10).map((s, idx) => (
+                <div key={`${s.url}-${idx}`} className="context-item">
+                  {s.query}
+                </div>
+              ))}
+              {(!contextSnapshot?.recent_searches || contextSnapshot.recent_searches.length === 0) && (
+                <div className="context-empty">No searches captured yet. Click “Refresh searches”.</div>
+              )}
+            </div>
+          </div>
+
+          <div className="context-section">
+            <div className="context-section-title">AI chat snippets</div>
+            <div className="context-list">
+              {contextSnapshot?.recent_ai_chats && Object.keys(contextSnapshot.recent_ai_chats).length > 0 ? (
+                Object.entries(contextSnapshot.recent_ai_chats)
+                  .sort(([a], [b]) => a.localeCompare(b))
+                  .map(([host, msgs]) => (
+                    <div key={host} className="context-host-block">
+                      <div className="context-host">{host}</div>
+                      {(msgs || []).slice(0, 5).map((m, i) => (
+                        <div key={`${host}-${i}`} className="context-item">
+                          <span className="context-role">{m.role || "unknown"}:</span> {m.text}
+                        </div>
+                      ))}
+                    </div>
+                  ))
+              ) : (
+                <div className="context-empty">No AI chat messages captured yet (supported: ChatGPT/Gemini/Claude/Perplexity).</div>
+              )}
+            </div>
+          </div>
+
+          {isSuggesting && (
+            <div className="halo-answer">
+              <div className="halo-thinking">
+                <span className="thinking-dot"></span>
+                <span className="thinking-dot"></span>
+                <span className="thinking-dot"></span>
+                Thinking...
+              </div>
+            </div>
+          )}
+
+          {suggestionText && !isSuggesting && (
+            <div className="halo-answer">
+              <div className="halo-answer-text">{suggestionText}</div>
             </div>
           )}
         </div>

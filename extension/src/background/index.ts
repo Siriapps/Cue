@@ -1,3 +1,13 @@
+import {
+  addRecentSearch,
+  buildContextBlob,
+  clearCueContext,
+  getCueContext,
+  mergeChatMessages,
+  setRecentSearches,
+  type SearchEntry,
+} from "../shared/context_store";
+
 const API_BASE = "http://localhost:8000";
 const WS_BASE = "ws://localhost:8000";
 
@@ -20,6 +30,108 @@ let sessionInfo: {
 
 // Session Audio Capture is now handled directly in content script (session_recorder.ts)
 // using navigator.mediaDevices.getUserMedia() - no offscreen documents needed!
+
+// ================== LOCAL CONTEXT (SEARCH + AI CHAT) ==================
+
+function inferSearchEngine(hostname: string): string {
+  const h = hostname.toLowerCase();
+  if (h.includes("google")) return "google";
+  if (h.includes("bing")) return "bing";
+  if (h.includes("duckduckgo")) return "duckduckgo";
+  if (h.includes("yahoo")) return "yahoo";
+  if (h.includes("brave")) return "brave";
+  if (h.includes("perplexity")) return "perplexity";
+  return hostname;
+}
+
+function extractSearchQueryFromUrl(rawUrl: string): { query: string; engine?: string } | null {
+  try {
+    const u = new URL(rawUrl);
+    const host = u.hostname.toLowerCase();
+
+    // Common query params across search engines.
+    const params = u.searchParams;
+    const candidates = [
+      params.get("q"),
+      params.get("query"),
+      params.get("p"),
+      params.get("text"),
+      params.get("search"),
+    ].filter(Boolean) as string[];
+
+    const query = (candidates[0] || "").trim();
+    if (!query) return null;
+
+    // Very light filtering to avoid capturing non-search pages.
+    const isLikelySearch =
+      host.includes("google") ||
+      host.includes("bing") ||
+      host.includes("duckduckgo") ||
+      host.includes("yahoo") ||
+      host.includes("brave") ||
+      host.includes("perplexity") ||
+      u.pathname.includes("/search");
+
+    if (!isLikelySearch) return null;
+
+    return { query, engine: inferSearchEngine(host) };
+  } catch {
+    return null;
+  }
+}
+
+async function refreshRecentSearchesFromHistory(max: number = 50): Promise<SearchEntry[]> {
+  // We pull more than max because not all history items are searches.
+  const MAX_SCAN = 2000;
+
+  if (!chrome?.history?.search) {
+    return [];
+  }
+
+  const items = await new Promise<chrome.history.HistoryItem[]>((resolve) => {
+    chrome.history.search({ text: "", maxResults: MAX_SCAN }, (results) => resolve(results || []));
+  });
+
+  const collected: SearchEntry[] = [];
+  for (const item of items) {
+    const url = item.url || "";
+    const parsed = extractSearchQueryFromUrl(url);
+    if (!parsed) continue;
+
+    collected.push({
+      query: parsed.query,
+      engine: parsed.engine,
+      url,
+      visitedAt: item.lastVisitTime || Date.now(),
+    });
+
+    if (collected.length >= max) break;
+  }
+
+  return collected;
+}
+
+// Best-effort incremental capture for search queries.
+try {
+  if (chrome?.history?.onVisited) {
+    chrome.history.onVisited.addListener((item) => {
+      const url = item.url || "";
+      const parsed = extractSearchQueryFromUrl(url);
+      if (!parsed) return;
+
+      addRecentSearch({
+        query: parsed.query,
+        engine: parsed.engine,
+        url,
+        visitedAt: item.lastVisitTime || Date.now(),
+      }).catch(() => {
+        // ignore
+      });
+    });
+  }
+} catch {
+  // ignore
+}
 
 function blobToBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -327,7 +439,106 @@ function stopGoLiveCapture() {
 
 // ================== MESSAGE HANDLERS ==================
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+type CueMessage =
+  | { type: "CONTEXT_GET_SNAPSHOT" }
+  | { type: "CONTEXT_REFRESH_SEARCHES" }
+  | { type: "CONTEXT_CLEAR" }
+  | { type: "CONTEXT_SAVE_CHAT_MESSAGES"; payload: { hostname: string; url?: string; messages: Array<{ role?: string; text: string }> } }
+  | { type: "CONTEXT_SUGGEST"; payload?: { goal?: string } }
+  | { type: string; [k: string]: any };
+
+chrome.runtime.onMessage.addListener((message: CueMessage, _sender, sendResponse) => {
+  // ===== Context (local-only) =====
+  if (message.type === "CONTEXT_GET_SNAPSHOT") {
+    (async () => {
+      try {
+        const ctx = await getCueContext();
+        sendResponse({ success: true, context: ctx });
+      } catch (e: any) {
+        sendResponse({ success: false, error: e?.message || String(e) });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === "CONTEXT_REFRESH_SEARCHES") {
+    (async () => {
+      try {
+        const searches = await refreshRecentSearchesFromHistory(50);
+        const ctx = await setRecentSearches(searches, 50);
+        sendResponse({ success: true, context: ctx });
+      } catch (e: any) {
+        sendResponse({ success: false, error: e?.message || String(e) });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === "CONTEXT_CLEAR") {
+    (async () => {
+      try {
+        await clearCueContext();
+        const ctx = await getCueContext();
+        sendResponse({ success: true, context: ctx });
+      } catch (e: any) {
+        sendResponse({ success: false, error: e?.message || String(e) });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === "CONTEXT_SAVE_CHAT_MESSAGES") {
+    (async () => {
+      try {
+        const host = message.payload?.hostname || "";
+        const url = message.payload?.url;
+        const incoming = (message.payload?.messages || []).map((m) => ({
+          role: (m.role as any) || "unknown",
+          text: m.text,
+          url,
+        }));
+
+        const ctx = await mergeChatMessages(host, incoming, 50);
+        sendResponse({ success: true, context: ctx });
+      } catch (e: any) {
+        sendResponse({ success: false, error: e?.message || String(e) });
+      }
+    })();
+    return true;
+  }
+
+  // Suggest using explicit-send context
+  if (message.type === "CONTEXT_SUGGEST") {
+    (async () => {
+      try {
+        const ctx = await getCueContext();
+        const context_blob = buildContextBlob(ctx);
+
+        const goal = message.payload?.goal || "Generate 3 helpful, concrete suggestions the user can take next.";
+        const prompt = [
+          "You are a proactive assistant inside a browser extension.",
+          "Using the user's recent search queries and recent AI chat messages, propose 3 suggestions.",
+          "Each suggestion should be one short paragraph and include a specific next step.",
+          "If the context is empty, respond with a single question asking what the user is working on.",
+          "",
+          `Goal: ${goal}`,
+        ].join("\n");
+
+        const response = await fetch(`${API_BASE}/ask_ai`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: prompt, context_blob }),
+        });
+
+        const data = await response.json();
+        sendResponse(data);
+      } catch (e: any) {
+        sendResponse({ success: false, error: e?.message || String(e) });
+      }
+    })();
+    return true;
+  }
+
   // Library
   if (message.type === "OPEN_LIBRARY") {
     try {
@@ -345,17 +556,26 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     (async () => {
       try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        const context = {
+
+        const includeContext = !!message.includeContext;
+        let context_blob: string | undefined;
+        if (includeContext) {
+          const ctx = await getCueContext();
+          context_blob = buildContextBlob(ctx);
+        }
+
+        const body = {
           query: message.query,
           page_title: tab?.title || "",
           current_url: tab?.url || "",
           selected_text: message.selectedText || "",
+          ...(context_blob ? { context_blob } : {}),
         };
 
         const response = await fetch(`${API_BASE}/ask_ai`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(context),
+          body: JSON.stringify(body),
         });
         const data = await response.json();
 
