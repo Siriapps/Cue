@@ -6,6 +6,7 @@ import PrismTaskCard from './components/PrismTaskCard';
 import ReelsFeed from './components/ReelsFeed';
 import AvatarViewer from './components/AvatarViewer';
 import SessionDetail from './components/SessionDetail';
+import DashboardHalo from './components/DashboardHalo';
 import './App.css';
 
 const ADK_API_URL = 'http://localhost:8000';
@@ -643,6 +644,9 @@ function App() {
 
   return (
     <div className="library-app">
+      {/* Dashboard Halo - Top Bar */}
+      <DashboardHalo />
+      
       {/* Sidebar */}
       <div className="library-sidebar">
         <div className="sidebar-brand">

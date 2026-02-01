@@ -1,4 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useWakeWord } from '../features/voice/useWakeWord';
+import { useSpeechRecognition } from '../features/voice/useSpeechRecognition';
+import { checkMicrophonePermission, requestMicrophoneAccess } from '../features/voice/voiceUtils';
 
 /**
  * DashboardHalo - Top bar for the dashboard matching the extension halo strip style
@@ -8,8 +11,343 @@ function DashboardHalo() {
   const [query, setQuery] = useState('');
   const [aiAnswer, setAiAnswer] = useState(null);
   const [isThinking, setIsThinking] = useState(false);
+  
+  // Voice state
+  const [isVoiceListening, setIsVoiceListening] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [wakeWordEnabled, setWakeWordEnabled] = useState(false);
+  const [needsPermission, setNeedsPermission] = useState(false);
+  const [voiceError, setVoiceError] = useState(null);
+  const [autoSendEnabled, setAutoSendEnabled] = useState(false); // Track if we should auto-send after wake word
+  
+  // Silence detection for auto-send
+  const silenceTimeoutRef = useRef(null);
+  const lastTranscriptTimeRef = useRef(null);
 
   const ADK_API_URL = 'http://localhost:8000';
+  
+  // Refs to store functions for use in callbacks
+  const stopWakeWordRef = useRef(null);
+  const resetTranscriptRef = useRef(null);
+  const startRecognitionRef = useRef(null);
+  const startWakeWordRef = useRef(null);
+  const stopRecognitionRef = useRef(null);
+  
+  // Check microphone permission on mount
+  useEffect(() => {
+    checkMicrophonePermission().then((permission) => {
+      if (permission === 'granted') {
+        setNeedsPermission(false);
+        setWakeWordEnabled(true);
+      } else {
+        setNeedsPermission(true);
+      }
+    });
+  }, []);
+
+  // Auto-send function - extracted for reuse
+  const autoSendQueryRef = useRef(null);
+  
+  // Auto-send function
+  const autoSendQuery = useCallback((queryText) => {
+    if (!queryText.trim()) return;
+    
+    console.log('[voice] Auto-sending command:', queryText);
+    // Stop transcription first
+    setIsTranscribing(false);
+    if (stopRecognitionRef.current) {
+      stopRecognitionRef.current();
+    }
+    // Clear silence timeout
+    if (silenceTimeoutRef.current) {
+      clearTimeout(silenceTimeoutRef.current);
+      silenceTimeoutRef.current = null;
+    }
+    // Reset auto-send flag
+    setAutoSendEnabled(false);
+    
+    // Auto-submit the query
+    const currentQuery = queryText.trim();
+    setQuery('');
+    setIsThinking(true);
+    setAiAnswer(null);
+
+    fetch(`${ADK_API_URL}/ask_ai`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        query: currentQuery,
+        page_title: 'cue Dashboard',
+        current_url: window.location.href,
+        selected_text: '',
+      }),
+    })
+    .then(response => response.json())
+    .then(data => {
+      setIsThinking(false);
+      if (data.success && data.answer) {
+        setAiAnswer(data.answer);
+      } else {
+        setAiAnswer(data.error || 'Failed to get AI response');
+      }
+      // Resume wake word detection after query is processed
+      if (wakeWordEnabled && !needsPermission && startWakeWordRef.current) {
+        setTimeout(() => {
+          console.log('[voice] Resuming wake word detection after auto-send...');
+          startWakeWordRef.current();
+        }, 500);
+      }
+    })
+    .catch(error => {
+      setIsThinking(false);
+      setAiAnswer('Error connecting to server');
+      // Resume wake word detection even on error
+      if (wakeWordEnabled && !needsPermission && startWakeWordRef.current) {
+        setTimeout(() => {
+          startWakeWordRef.current();
+        }, 500);
+      }
+    });
+  }, [wakeWordEnabled, needsPermission]);
+
+  // Update ref when function changes
+  useEffect(() => {
+    autoSendQueryRef.current = autoSendQuery;
+  }, [autoSendQuery]);
+
+  // Speech recognition (activated after wake word or manual mic click)
+  const handleTranscript = useCallback((text) => {
+    setQuery(text);
+    
+    // Update last transcript time for silence detection
+    lastTranscriptTimeRef.current = Date.now();
+    
+    // Clear existing silence timeout
+    if (silenceTimeoutRef.current) {
+      clearTimeout(silenceTimeoutRef.current);
+    }
+    
+    // If we have text and are transcribing, set up auto-send on silence
+    // Auto-send after 1.5 seconds of silence (user stopped speaking)
+    if (text.trim() && isTranscribing) {
+      silenceTimeoutRef.current = setTimeout(() => {
+        console.log('[voice] Silence detected, auto-sending...');
+        // Trigger auto-send with current transcript
+        if (text.trim() && autoSendQueryRef.current) {
+          autoSendQueryRef.current(text.trim());
+        }
+      }, 1500); // 1.5 seconds of silence
+    }
+  }, [isTranscribing]);
+
+  // Handle final transcript - auto-send when user stops speaking
+  const handleFinalTranscript = useCallback((text) => {
+    setQuery(text);
+    
+    // Clear silence timeout since we got a final transcript
+    if (silenceTimeoutRef.current) {
+      clearTimeout(silenceTimeoutRef.current);
+      silenceTimeoutRef.current = null;
+    }
+    
+    // Auto-send if we're transcribing (either wake word or manual mic)
+    if (isTranscribing && text.trim() && autoSendQueryRef.current) {
+      autoSendQueryRef.current(text.trim());
+    }
+  }, [isTranscribing]);
+
+  const {
+    isListening: isRecognitionListening,
+    transcript,
+    error: recognitionError,
+    start: startRecognition,
+    stop: stopRecognition,
+    reset: resetTranscript,
+  } = useSpeechRecognition({
+    onTranscript: handleTranscript,
+    onFinalTranscript: handleFinalTranscript,
+    enabled: false, // We'll control it manually to ensure proper timing
+    continuous: true,
+    interimResults: true,
+  });
+
+  // Cleanup silence timeout when transcription stops
+  useEffect(() => {
+    if (!isTranscribing && silenceTimeoutRef.current) {
+      clearTimeout(silenceTimeoutRef.current);
+      silenceTimeoutRef.current = null;
+    }
+  }, [isTranscribing]);
+
+  // Update refs when functions are available
+  useEffect(() => {
+    startRecognitionRef.current = startRecognition;
+    resetTranscriptRef.current = resetTranscript;
+    stopRecognitionRef.current = stopRecognition;
+  }, [startRecognition, resetTranscript, stopRecognition]);
+
+  // Handle wake word detection
+  const handleWakeWordDetected = useCallback(() => {
+    console.log('[voice] Wake word "Hey Cue" detected');
+    
+    // Stop wake word detection first to free the microphone
+    if (stopWakeWordRef.current) {
+      stopWakeWordRef.current();
+    }
+    
+    // Open chat panel
+    setChatOpen(true);
+    
+    // Reset transcript and clear query
+    if (resetTranscriptRef.current) {
+      resetTranscriptRef.current();
+    }
+    setQuery('');
+    
+    // Enable auto-send for wake word triggered commands
+    setAutoSendEnabled(true);
+    
+    // Wait a moment for wake word recognition to fully release the microphone
+    // Then start transcription
+    setTimeout(() => {
+      setIsTranscribing(true);
+      // The useSpeechRecognition hook will auto-start when enabled becomes true
+      // But we'll also manually start it to ensure it happens
+      setTimeout(() => {
+        if (startRecognitionRef.current) {
+          startRecognitionRef.current();
+        }
+      }, 100);
+    }, 300);
+  }, []);
+
+  // Wake word detection - disable when transcribing to avoid conflicts
+  const {
+    isListening: isWakeWordListening,
+    isInitialized: wakeWordInitialized,
+    error: wakeWordError,
+    start: startWakeWord,
+    stop: stopWakeWord,
+  } = useWakeWord({
+    wakePhrase: 'Hey Cue',
+    onWakeWordDetected: handleWakeWordDetected,
+    enabled: wakeWordEnabled && !needsPermission && !isTranscribing,
+  });
+
+  // Update refs when wake word functions are available
+  useEffect(() => {
+    stopWakeWordRef.current = stopWakeWord;
+    startWakeWordRef.current = startWakeWord;
+  }, [stopWakeWord, startWakeWord]);
+
+  // Start transcription when isTranscribing becomes true (after wake word)
+  useEffect(() => {
+    if (isTranscribing && !isRecognitionListening) {
+      console.log('[voice] Starting transcription after wake word...');
+      // Ensure wake word is stopped first
+      if (isWakeWordListening && stopWakeWordRef.current) {
+        stopWakeWordRef.current();
+      }
+      // Delay to ensure wake word recognition has fully released the microphone
+      const timer = setTimeout(() => {
+        console.log('[voice] Attempting to start transcription...');
+        try {
+          if (startRecognitionRef.current) {
+            startRecognitionRef.current();
+          }
+        } catch (error) {
+          console.error('[voice] Failed to start transcription:', error);
+          setVoiceError(`Failed to start transcription: ${error.message}`);
+          setIsTranscribing(false);
+        }
+      }, 400);
+      return () => clearTimeout(timer);
+    } else if (!isTranscribing && isRecognitionListening) {
+      console.log('[voice] Stopping transcription...');
+      stopRecognition();
+      // Reset auto-send flag when transcription stops
+      setAutoSendEnabled(false);
+      // Resume wake word detection after transcription stops
+      if (wakeWordEnabled && !needsPermission && startWakeWordRef.current) {
+        setTimeout(() => {
+          console.log('[voice] Resuming wake word detection...');
+          startWakeWordRef.current();
+        }, 500);
+      }
+    }
+  }, [isTranscribing, isRecognitionListening, isWakeWordListening, startRecognition, stopRecognition, wakeWordEnabled, needsPermission, startWakeWord, stopWakeWord]);
+
+  // Update listening state
+  useEffect(() => {
+    setIsVoiceListening(isWakeWordListening || isRecognitionListening);
+  }, [isWakeWordListening, isRecognitionListening]);
+
+  // Handle errors
+  useEffect(() => {
+    if (wakeWordError) {
+      setVoiceError(wakeWordError);
+    } else if (recognitionError) {
+      setVoiceError(recognitionError);
+    } else {
+      setVoiceError(null);
+    }
+  }, [wakeWordError, recognitionError]);
+
+  // Request microphone permission
+  const handleRequestPermission = useCallback(async () => {
+    try {
+      await requestMicrophoneAccess();
+      setNeedsPermission(false);
+      setWakeWordEnabled(true);
+      setVoiceError(null);
+    } catch (error) {
+      setVoiceError(`Permission denied: ${error.message}`);
+    }
+  }, []);
+
+  // Manual mic button click
+  const handleMicClick = useCallback(async () => {
+    if (needsPermission) {
+      await handleRequestPermission();
+      return;
+    }
+
+    if (isTranscribing) {
+      // Stop transcription
+      stopRecognition();
+      setIsTranscribing(false);
+      setAutoSendEnabled(false); // Disable auto-send when manually stopping
+      if (resetTranscriptRef.current) {
+        resetTranscriptRef.current();
+      }
+      // Resume wake word detection
+      if (wakeWordEnabled && !needsPermission && startWakeWordRef.current) {
+        setTimeout(() => {
+          startWakeWordRef.current();
+        }, 300);
+      }
+    } else {
+      // Stop wake word detection first
+      if (stopWakeWordRef.current) {
+        stopWakeWordRef.current();
+      }
+      // Start transcription (manual mic - also auto-sends on silence)
+      setChatOpen(true);
+      setAutoSendEnabled(true); // Manual mic also auto-sends when user stops speaking
+      if (resetTranscriptRef.current) {
+        resetTranscriptRef.current();
+      }
+      setQuery('');
+      setTimeout(() => {
+        setIsTranscribing(true);
+        setTimeout(() => {
+          if (startRecognitionRef.current) {
+            startRecognitionRef.current();
+          }
+        }, 200);
+      }, 200);
+    }
+  }, [needsPermission, isTranscribing, handleRequestPermission, stopRecognition, wakeWordEnabled]);
 
   const handleAsk = async () => {
     if (!query.trim()) return;
@@ -100,6 +438,21 @@ function DashboardHalo() {
         <span>Ask AI</span>
       </button>
 
+      {/* Mic Button */}
+      <button 
+        className={`halo-btn mic-btn ${isTranscribing ? 'listening' : ''} ${isVoiceListening ? 'active' : ''}`}
+        onClick={handleMicClick}
+        title={needsPermission ? 'Enable microphone access' : (isTranscribing ? 'Stop listening' : 'Start voice input')}
+      >
+        <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+          <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
+          <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+        </svg>
+        {needsPermission && <span>Enable</span>}
+        {!needsPermission && !isTranscribing && <span>Mic</span>}
+        {isTranscribing && <span>Stop</span>}
+      </button>
+
       {/* Library Button (current page indicator) */}
       <button className="halo-btn library active">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
@@ -118,15 +471,23 @@ function DashboardHalo() {
             <span>Ask AI</span>
             <button className="halo-close" onClick={toggleChat}>×</button>
           </div>
-          <input
-            className="halo-input"
-            placeholder="Ask anything about your sessions..."
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') handleAsk();
-            }}
-          />
+          <div className="halo-input-wrapper">
+            <input
+              className="halo-input"
+              placeholder="Ask anything about your sessions..."
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleAsk();
+              }}
+            />
+            {isTranscribing && (
+              <div className="listening-indicator">
+                <span className="listening-dot"></span>
+                <span className="listening-text">Cue is listening...</span>
+              </div>
+            )}
+          </div>
           <div className="halo-actions">
             <button className="halo-btn send-btn" onClick={handleAsk}>
               Send
@@ -145,6 +506,16 @@ function DashboardHalo() {
           {aiAnswer && !isThinking && (
             <div className="halo-answer">
               <div className="halo-answer-text">{aiAnswer}</div>
+            </div>
+          )}
+          {voiceError && (
+            <div className="halo-error">
+              <span>Voice error: {voiceError}</span>
+              {needsPermission && (
+                <button className="halo-btn permission-btn" onClick={handleRequestPermission}>
+                  Enable Microphone
+                </button>
+              )}
             </div>
           )}
         </div>
