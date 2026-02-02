@@ -221,6 +221,12 @@ export function HaloStrip(): React.JSX.Element {
       silenceTimeoutRef.current = window.setTimeout(() => {
         console.log("[cue] Silence detected, auto-sending...");
         if (text.trim()) {
+          // Stop transcription and hide "Listening" before sending
+          if (recognitionStopRef.current) {
+            recognitionStopRef.current();
+          }
+          setIsTranscribing(false);
+          setAutoSendEnabled(false);
           autoSendQuery(text.trim());
         }
       }, 1500);
@@ -751,9 +757,11 @@ export function HaloStrip(): React.JSX.Element {
               e.stopPropagation(); // Prevent YouTube/page from capturing keys
               if (e.key === "Enter") {
                 // Stop transcription if active
+                // Stop transcription when user manually sends
                 if (isTranscribing && recognitionStopRef.current) {
                   recognitionStopRef.current();
                   setIsTranscribing(false);
+                  setAutoSendEnabled(false);
                 }
                 handleAsk();
               }

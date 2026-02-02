@@ -28,14 +28,18 @@ export function useWakeWord(options: UseWakeWordOptions = {}) {
     // Keep a minimal mic stream open in content script to show tab indicator
     const indicatorStreamRef = useRef<MediaStream | null>(null);
 
-    // Check if site has CSP restrictions (like YouTube)
+    // Check if site has CSP restrictions (like YouTube, Google Docs)
     const checkCSPRestrictions = useCallback(() => {
         const hostname = window.location.hostname;
         // Sites known to block SpeechRecognition via CSP
         const cspRestrictedSites = [
             'youtube.com',
             'www.youtube.com',
-            'youtu.be'
+            'youtu.be',
+            'docs.google.com',
+            'sheets.google.com',
+            'drive.google.com',
+            'meet.google.com'
         ];
         
         const isRestricted = cspRestrictedSites.some(site => hostname.includes(site));
@@ -86,7 +90,6 @@ export function useWakeWord(options: UseWakeWordOptions = {}) {
     useEffect(() => {
         const handleMessage = (message: any) => {
             if (message.type === 'WAKE_WORD_DETECTED') {
-                console.log('[cue] 🎤 Wake up call detected signal received');
                 if (onWakeWordDetectedRef.current) {
                     onWakeWordDetectedRef.current();
                 }
@@ -111,22 +114,18 @@ export function useWakeWord(options: UseWakeWordOptions = {}) {
             setUseOffscreen(true);
             setIsInitialized(true); // Mark as initialized so we can start
             console.log('[voice] Using offscreen document for wake word detection (CSP restrictions)');
+            // Don't initialize SpeechRecognition in content script when using offscreen
             return;
         }
         
         // Use content script approach for other sites
+        // Only initialize SpeechRecognition if NOT using offscreen
         const hostname = window.location.hostname;
         const protocol = window.location.protocol;
         const isGoogleDomain = hostname.includes('google.com') || hostname.includes('youtube.com');
         
-        console.log('[voice] Initializing SpeechRecognition in content script on:', hostname, 'protocol:', protocol);
-        if (isGoogleDomain) {
-            console.log('[voice] ✅ Google domain detected - Cue will work on this page');
-        }
-        
         // Check if SpeechRecognition is available
         const isAvailable = isSpeechRecognitionAvailable();
-        console.log('[voice] SpeechRecognition available:', isAvailable, 'on:', hostname);
         
         if (!isAvailable) {
             console.error('[voice] Speech Recognition not available in this browser on:', hostname);
@@ -143,7 +142,7 @@ export function useWakeWord(options: UseWakeWordOptions = {}) {
             return;
         }
         
-        console.log('[voice] SpeechRecognition constructor found, creating instance on:', hostname);
+        // Create SpeechRecognition instance
         setUseOffscreen(false);
 
         try {
@@ -154,69 +153,76 @@ export function useWakeWord(options: UseWakeWordOptions = {}) {
             recognition.maxAlternatives = 1;
 
             recognition.onstart = () => {
-                console.log('[voice] ✅ Wake word recognition started on:', window.location.hostname);
+                console.log('[cue] 🎤 Voice recognition is ON - listening for "Hey Cue"');
                 setIsListening(true);
                 setError(null);
             };
 
-            recognition.onresult = (event: any) => {
-                for (let i = event.resultIndex; i < event.results.length; i++) {
-                    const result = event.results[i];
-                    const transcript = result[0].transcript.toLowerCase().trim();
-                    const isFinal = result.isFinal;
-                    
-                    // Log transcripts that might be wake words
-                    if (transcript.includes('hey') || transcript.includes('cue') || transcript.includes('q')) {
-                        console.log(`[voice] ${isFinal ? 'Final' : 'Interim'} transcript: "${transcript}"`);
-                    }
-                    
-                    // Check for wake word
-                    const hasHey = transcript.includes('hey');
-                    const hasCue = transcript.includes('cue') || transcript.includes('q') || transcript.includes('queue');
-                    const hasCombined = transcript.includes('heycue') || transcript.includes('heyq') || transcript.includes('hey queue');
-                    
-                    if ((hasHey && hasCue) || hasCombined) {
-                        console.log('[voice] 🎤 Wake up call detected! Transcript:', transcript);
-                        wakeWordDetectedRef.current = true;
-                        
-                        // Stop recognition
-                        try {
-                            recognition.stop();
-                        } catch (e) {
-                            console.warn('[voice] Error stopping recognition:', e);
-                        }
-                        
-                        // Notify callback
-                        if (onWakeWordDetectedRef.current) {
-                            onWakeWordDetectedRef.current();
-                        }
-                        return;
-                    }
+        recognition.onresult = (event: any) => {
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                const result = event.results[i];
+                const transcript = result[0].transcript.toLowerCase().trim();
+                
+                // Log what we're hearing (temporary debug)
+                if (transcript.includes('hey') || transcript.includes('cue') || transcript.includes('q')) {
+                    console.log('[cue] Heard:', transcript);
                 }
-            };
+                
+                // Normalize transcript - be more permissive
+                const normalized = transcript.replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
+                
+                // Check for wake word - be very permissive
+                const hasHey = normalized.includes('hey') || normalized.includes('hay');
+                const hasCue = normalized.includes('cue') || normalized.includes('q') || normalized.includes('queue') || normalized.includes('kyu');
+                
+                // Also check for combined forms (no spaces)
+                const noSpaces = normalized.replace(/\s/g, '');
+                const hasCombined = noSpaces.includes('heycue') || noSpaces.includes('heyq') || noSpaces.includes('haycue') || noSpaces.includes('hayq');
+                
+                // Check if words appear close together (within 3 words)
+                const words = normalized.split(/\s+/);
+                let heyIndex = -1;
+                let cueIndex = -1;
+                for (let j = 0; j < words.length; j++) {
+                    if (words[j].includes('hey') || words[j].includes('hay')) heyIndex = j;
+                    if (words[j].includes('cue') || words[j].includes('q') || words[j].includes('queue') || words[j].includes('kyu')) cueIndex = j;
+                }
+                const wordsClose = heyIndex >= 0 && cueIndex >= 0 && Math.abs(heyIndex - cueIndex) <= 3;
+                
+                if ((hasHey && hasCue) || hasCombined || wordsClose) {
+                    console.log('[cue] ✅ WAKE UP CALL DETECTED!');
+                    wakeWordDetectedRef.current = true;
+                    
+                    // Stop recognition
+                    try {
+                        recognition.stop();
+                    } catch (e) {
+                        // Ignore errors
+                    }
+                    
+                    // Notify callback
+                    if (onWakeWordDetectedRef.current) {
+                        onWakeWordDetectedRef.current();
+                    }
+                    return;
+                }
+            }
+        };
 
             recognition.onerror = (event: any) => {
                 const error = event.error;
-                console.log('[voice] Recognition error on:', window.location.hostname, 'error:', error);
                 
                 if (error === 'aborted') {
-                    console.log('[voice] Recognition aborted');
                     setIsListening(false);
                     return;
                 }
                 
                 if (error === 'not-allowed') {
-                    console.error('[voice] ❌ Recognition error: not-allowed on:', window.location.hostname);
-                    console.error('[voice] SpeechRecognition permission denied');
-                    console.error('[voice] This page may have Content Security Policy restrictions');
-                    console.log('[voice] Falling back to offscreen document approach...');
-                    
+                    console.error('[cue] ❌ Microphone permission denied');
                     // Switch to offscreen document approach
                     setUseOffscreen(true);
                     setIsListening(false);
-                    setError(null); // Clear error, we'll try offscreen
-                    
-                    // Try starting with offscreen document
+                    setError(null);
                     setTimeout(() => {
                         if (enabled) {
                             start();
@@ -226,23 +232,21 @@ export function useWakeWord(options: UseWakeWordOptions = {}) {
                 }
                 
                 if (error === 'no-speech') {
-                    // Normal - just means no speech detected yet
                     return;
                 }
-                
-                console.warn('[voice] Recognition error on:', window.location.hostname, 'error:', error);
                 
                 // Auto-restart on recoverable errors
                 if (isListening && !isRestartingRef.current && !wakeWordDetectedRef.current) {
                     if (error !== 'aborted' && error !== 'not-allowed') {
                         isRestartingRef.current = true;
                         setTimeout(() => {
-                            if (enabled && recognitionRef.current && !wakeWordDetectedRef.current) {
+                            if (enabled && recognitionRef.current && !wakeWordDetectedRef.current && !isListening) {
                                 try {
-                                    console.log('[voice] Auto-restarting recognition on:', window.location.hostname);
                                     recognitionRef.current.start();
-                                } catch (e) {
-                                    console.error('[voice] Failed to restart on:', window.location.hostname, e);
+                                } catch (e: any) {
+                                    if (e.message && e.message.includes('already started')) {
+                                        setIsListening(true);
+                                    }
                                 }
                             }
                             isRestartingRef.current = false;
@@ -252,30 +256,27 @@ export function useWakeWord(options: UseWakeWordOptions = {}) {
             };
 
             recognition.onend = () => {
-                console.log('[voice] Recognition ended. enabled:', enabled, 'wakeWordDetected:', wakeWordDetectedRef.current);
                 setIsListening(false);
                 // Auto-restart if supposed to be listening
                 if (enabled && !wakeWordDetectedRef.current && !isRestartingRef.current) {
                     isRestartingRef.current = true;
                     setTimeout(() => {
-                        if (enabled && recognitionRef.current && !wakeWordDetectedRef.current) {
+                        if (enabled && recognitionRef.current && !wakeWordDetectedRef.current && !isListening) {
                             try {
-                                console.log('[voice] Auto-restarting recognition after end...');
                                 recognitionRef.current.start();
-                            } catch (e) {
-                                console.error('[voice] Failed to restart after end:', e);
-                                isRestartingRef.current = false;
+                            } catch (e: any) {
+                                if (e.message && e.message.includes('already started')) {
+                                    setIsListening(true);
+                                }
                             }
-                        } else {
-                            isRestartingRef.current = false;
                         }
-                    }, 500);
+                        isRestartingRef.current = false;
+                    }, 1000);
                 }
             };
 
             recognitionRef.current = recognition;
             setIsInitialized(true);
-            console.log('[voice] SpeechRecognition initialized successfully');
 
             return () => {
                 console.log('[voice] Cleaning up SpeechRecognition...');
@@ -297,26 +298,26 @@ export function useWakeWord(options: UseWakeWordOptions = {}) {
 
     const start = useCallback(async () => {
         if (!isInitialized) {
-            console.warn('[voice] Cannot start - not initialized. isInitialized:', isInitialized);
+            return;
+        }
+        
+        // Don't start if already listening
+        if (isListening) {
             return;
         }
 
         // If using offscreen document, start it via background script
         if (useOffscreen) {
-            console.log('[voice] Starting wake word detection via offscreen document on:', window.location.hostname);
             try {
                 const response = await chrome.runtime.sendMessage({ type: 'START_WAKE_WORD' });
                 if (response && response.success) {
-                    console.log('[voice] ✅ Offscreen wake word detection started');
                     setIsListening(true);
                     setError(null);
                 } else {
-                    console.error('[voice] Failed to start offscreen wake word:', response?.error);
                     setError(response?.error || 'Failed to start wake word detection');
                     setIsListening(false);
                 }
             } catch (e: any) {
-                console.error('[voice] Error starting offscreen wake word:', e);
                 setError(e.message || 'Failed to start wake word detection');
                 setIsListening(false);
             }
@@ -325,97 +326,53 @@ export function useWakeWord(options: UseWakeWordOptions = {}) {
 
         // Content script approach
         if (!recognitionRef.current) {
-            console.warn('[voice] Cannot start - recognition not initialized');
+            return;
+        }
+        
+        // Don't start if already listening
+        if (isListening) {
             return;
         }
 
-        console.log('[voice] Starting wake word detection on:', window.location.hostname);
         wakeWordDetectedRef.current = false;
         
         // Request mic access in content script to show tab indicator
-        // For localhost and Google domains, ensure permission is granted
         try {
             if (!indicatorStreamRef.current) {
-                const hostname = window.location.hostname;
-                const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1' || hostname.startsWith('localhost:') || hostname.startsWith('127.0.0.1:');
-                const isGoogleDomain = hostname.includes('google.com') || hostname.includes('youtube.com') || hostname.includes('gmail.com');
-                
-                if (isLocalhost) {
-                    console.log('[voice] Requesting microphone permission for localhost:', hostname);
-                } else if (isGoogleDomain) {
-                    console.log('[voice] Requesting microphone permission for Google domain:', hostname);
-                } else {
-                    console.log('[voice] Requesting microphone for tab indicator...');
-                }
-                
                 const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                 indicatorStreamRef.current = stream;
                 stream.getAudioTracks().forEach(track => {
-                    track.enabled = true; // Keep enabled to show indicator
+                    track.enabled = true;
                 });
-                
-                if (isLocalhost) {
-                    console.log('[voice] ✅ Microphone permission granted for localhost:', hostname);
-                } else if (isGoogleDomain) {
-                    console.log('[voice] ✅ Microphone permission granted for Google domain:', hostname);
-                } else {
-                    console.log('[voice] ✅ Microphone stream active for indicator');
-                }
             }
         } catch (e: any) {
-            const hostname = window.location.hostname;
-            const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1' || hostname.startsWith('localhost:') || hostname.startsWith('127.0.0.1:');
-            const isGoogleDomain = hostname.includes('google.com') || hostname.includes('youtube.com') || hostname.includes('gmail.com');
-            
-            if (isLocalhost) {
-                console.error('[voice] ❌ Failed to get mic permission on localhost:', hostname, e.message);
-                console.error('[voice] Please allow microphone access for localhost in your browser settings');
-            } else if (isGoogleDomain) {
-                console.error('[voice] ❌ Failed to get mic permission on Google domain:', hostname, e.message);
-                console.error('[voice] Please allow microphone access for this Google domain in your browser settings');
-            } else {
-                console.warn('[voice] Failed to get mic stream for indicator:', e.message);
-            }
             // Continue anyway - recognition will still work
         }
 
         // Start recognition directly
         try {
-            const hostname = window.location.hostname;
-            const isGoogleDomain = hostname.includes('google.com') || hostname.includes('youtube.com');
-            
-            if (isGoogleDomain) {
-                console.log('[voice] 🎤 Starting wake word detection on Google domain:', hostname);
-            } else {
-                console.log('[voice] Attempting to start SpeechRecognition on:', hostname);
-            }
-            console.log('[voice] Page URL:', window.location.href);
-            console.log('[voice] Recognition object:', recognitionRef.current);
-            
-            // Check if recognition is in a valid state
             if (!recognitionRef.current) {
                 throw new Error('Recognition object is null');
             }
             
-            recognitionRef.current.start();
-            
-            if (isGoogleDomain) {
-                console.log('[voice] ✅ Wake word detection started on Google domain:', hostname);
-                console.log('[voice] Say "Hey Cue" to activate Cue on this Google page');
-            } else {
-                console.log('[voice] ✅ Wake word detection started on:', hostname);
+            // Check if recognition is already running before starting
+            if (isListening) {
+                console.log('[cue] Recognition already running, skipping start');
+                return;
             }
-        } catch (e: any) {
-            console.error('[voice] ❌ Failed to start recognition on:', window.location.hostname);
-            console.error('[voice] Error details:', e.message, e.name, e);
             
-            // If it's an "already started" error, that's actually okay
+            recognitionRef.current.start();
+        } catch (e: any) {
+            // If it's an "already started" error, that's actually okay - recognition is working
             if (e.message && e.message.includes('already started')) {
-                console.log('[voice] Recognition already started (this is okay)');
                 setIsListening(true);
                 setError(null);
                 return;
             }
+            
+            console.error('[cue] ❌ Failed to start recognition:', e.message);
+            setError(e.message || 'Failed to start recognition');
+            setIsListening(false);
             
             // If it's a permission error, try offscreen as fallback
             if (e.message && (e.message.includes('not-allowed') || e.message.includes('permission'))) {
@@ -486,20 +443,15 @@ export function useWakeWord(options: UseWakeWordOptions = {}) {
     // Sync enabled state
     useEffect(() => {
         if (!isInitialized) {
-            console.log('[voice] Not initialized yet, waiting... hostname:', window.location.hostname);
             return;
         }
 
-        console.log('[voice] Enabled state changed. enabled:', enabled, 'isListening:', isListening, 'hostname:', window.location.hostname, 'URL:', window.location.href);
-
         if (enabled && !isListening) {
-            console.log('[voice] Starting wake word detection (enabled=true) on:', window.location.hostname);
             // Small delay to ensure page is ready
             setTimeout(() => {
                 start();
             }, 100);
         } else if (!enabled && isListening) {
-            console.log('[voice] Stopping wake word detection (enabled=false) on:', window.location.hostname);
             stop();
         }
     }, [enabled, isInitialized, start, stop, isListening]);
