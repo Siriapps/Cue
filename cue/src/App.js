@@ -7,7 +7,6 @@ import ProcessingSessionCard from './components/ProcessingSessionCard';
 import AudioSessionCard from './components/AudioSessionCard';
 import PrismTaskCard from './components/PrismTaskCard';
 import ReelsFeed from './components/ReelsFeed';
-import AvatarViewer from './components/AvatarViewer';
 import SessionDetail from './components/SessionDetail';
 
 // Pages
@@ -15,7 +14,6 @@ import Landing from './pages/Landing';
 import Login from './pages/Login';
 import GoogleActivity from './pages/GoogleActivity';
 import MosaicField from './pages/MosaicField';
-import DailyOrbit from './pages/DailyOrbit';
 
 // Layout
 import DashboardLayout from './layouts/DashboardLayout';
@@ -160,6 +158,8 @@ function App() {
             has_video: data.has_video || !!data.video_url,
             created_at: data.created_at || new Date().toISOString(),
             isLive: true,
+            thumbnail_base64: data.thumbnail_base64 || null,
+            thumbnail_mime_type: data.thumbnail_mime_type || 'image/png',
           };
 
           setLiveSessions((prev) => [newSession, ...prev]);
@@ -203,7 +203,7 @@ function App() {
           setLiveSessions((prev) =>
             prev.map((s) => (s.sessionId === data.tempSessionId ? { ...s, sessionId: data.dbSessionId } : s))
           );
-        } else if (data.type === 'ACTIVITY_UPDATE') {
+        } else if (data.type === 'ACTIVITY_UPDATE' || data.type === 'SUGGESTED_TASKS_UPDATE') {
           setLastActivityUpdate(Date.now());
         }
       } catch (e) {
@@ -251,6 +251,8 @@ function App() {
           created_at: session.created_at || session._id?.$date || new Date().toISOString(),
           video_url: session.video_url || null,
           has_video: session.has_video || !!session.video_url,
+          thumbnail_base64: session.thumbnail_base64 || null,
+          thumbnail_mime_type: session.thumbnail_mime_type || 'image/png',
           summary: {
             tldr: summary.tldr || summary.summary_tldr || 'No summary available',
             key_points: summary.key_points || [],
@@ -363,7 +365,7 @@ function App() {
     }
   }, []);
 
-  // Initial data load
+  // Initial data load (no polling; updates come from WebSocket e.g. SESSION_RESULT)
   useEffect(() => {
     if (isAuthenticated) {
       loadSessions();
@@ -372,17 +374,7 @@ function App() {
       loadReels();
       connectDashboardWS();
 
-      const sessionInterval = setInterval(loadSessions, 5000);
-      const memoryInterval = setInterval(() => {
-        loadSummaries();
-        loadDiagrams();
-        loadReels();
-      }, 5000);
-
       return () => {
-        clearInterval(sessionInterval);
-        clearInterval(memoryInterval);
-        if (avatarWsRef.current) avatarWsRef.current.close();
         if (dashboardWsRef.current) dashboardWsRef.current.close();
       };
     }
@@ -392,53 +384,6 @@ function App() {
   useEffect(() => {
     const id = setInterval(() => setTimeTick(Date.now()), 60000);
     return () => clearInterval(id);
-  }, []);
-
-  // Avatar WebSocket
-  const connectAvatarWS = useCallback(() => {
-    if (avatarWsRef.current?.readyState === WebSocket.OPEN) return;
-
-    const ws = new WebSocket(`${WS_URL}/ws/puppeteer`);
-
-    ws.onopen = () => setIsAvatarLive(true);
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type === 'pose') {
-          setAvatarPose(data);
-          setMotionContext(data.context || null);
-          setPoseHistory((prev) => [...prev.slice(-19), { ...data, timestamp: Date.now() }]);
-        } else if (data.type === 'motion') {
-          setMotionContext(data.context || null);
-        }
-      } catch (e) {}
-    };
-    ws.onclose = () => {
-      setIsAvatarLive(false);
-      avatarWsRef.current = null;
-    };
-
-    avatarWsRef.current = ws;
-  }, []);
-
-  const disconnectAvatarWS = useCallback(() => {
-    if (avatarWsRef.current) {
-      avatarWsRef.current.close();
-      avatarWsRef.current = null;
-    }
-    setIsAvatarLive(false);
-  }, []);
-
-  const loadPresetPose = useCallback(async (poseName) => {
-    try {
-      const response = await fetch(`${ADK_API_URL}/pose`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pose_name: poseName }),
-      });
-      const data = await response.json();
-      if (!data.error) setAvatarPose(data);
-    } catch (error) {}
   }, []);
 
   const handleDeleteSession = async (sessionId) => {
@@ -495,7 +440,7 @@ function App() {
     if (diffHours < 24) return `${diffHours}h ago`;
     if (diffDays === 1) return 'Yesterday';
     if (diffDays < 7) return `${diffDays}d ago`;
-    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
   };
 
   const formatDuration = (seconds) => {
@@ -529,6 +474,9 @@ function App() {
     );
   };
 
+  // Library: view mode (grid/list) for stitch reference
+  const [viewMode, setViewMode] = useState('grid');
+
   // Library page content
   const LibraryContent = () => (
     <>
@@ -541,10 +489,35 @@ function App() {
         />
       ) : (
         <div className="sessions-container">
-          <div className="section-header">
-            <h2 className="sections-title">Past Digital Sessions</h2>
-            <span className="session-count">{filteredSessions.length + processingSessions.length} sessions</span>
+          <div className="section-header library-view-header">
             <span aria-hidden="true" style={{ display: 'none' }}>{timeTick}</span>
+            <div className="library-view-controls">
+              <div className="view-toggle glass">
+                <button
+                  type="button"
+                  className={viewMode === 'grid' ? 'active' : ''}
+                  onClick={() => setViewMode('grid')}
+                >
+                  Grid
+                </button>
+                <button
+                  type="button"
+                  className={viewMode === 'list' ? 'active' : ''}
+                  onClick={() => setViewMode('list')}
+                >
+                  List
+                </button>
+              </div>
+              <div className="library-filters">
+                <select className="filter-select glass" aria-label="Date filter">
+                  <option>Date: Recent</option>
+                  <option>Date: Oldest</option>
+                </select>
+                <select className="filter-select glass" aria-label="Project filter">
+                  <option>Project: All</option>
+                </select>
+              </div>
+            </div>
           </div>
 
           {loading && processingSessions.length === 0 && filteredSessions.length === 0 ? (
@@ -553,14 +526,14 @@ function App() {
               <p>Loading sessions...</p>
             </div>
           ) : (
-            <div className="sessions-grid">
+            <div className={`sessions-grid ${viewMode === 'list' ? 'sessions-list-view' : ''}`}>
               {processingSessions.map((session) => (
                 <ProcessingSessionCard key={session.id} session={session} formatDuration={formatDuration} />
               ))}
 
-              {filteredSessions.map((session, index) => (
+              {filteredSessions.map((session) => (
                 <SessionCard
-                  key={session.sessionId || session._id || index}
+                  key={session.sessionId || session._id}
                   session={session}
                   formatDate={formatDate}
                   formatDuration={formatDuration}
@@ -571,7 +544,7 @@ function App() {
 
               <div className="session-card new-session-card" onClick={() => alert('Use the cue extension to record a session.')}>
                 <div className="new-session-icon">+</div>
-                <div className="new-session-text">Record New Session</div>
+                <div className="new-session-text">Schedule New Meeting</div>
               </div>
             </div>
           )}
@@ -604,48 +577,6 @@ function App() {
         </div>
       )}
     </>
-  );
-
-  // Avatar page content
-  const AvatarContent = () => (
-    <div className="sessions-container avatar-container">
-      <div className="avatar-panel">
-        <div className="avatar-main">
-          <AvatarViewer pose={avatarPose} isLive={isAvatarLive} motionContext={motionContext} height={500} />
-        </div>
-        <div className="avatar-controls">
-          <h3>Live Connection</h3>
-          <div className="control-group">
-            {!isAvatarLive ? (
-              <button className="primary-btn" onClick={connectAvatarWS}>Connect Live</button>
-            ) : (
-              <button className="secondary-btn" onClick={disconnectAvatarWS}>Disconnect</button>
-            )}
-          </div>
-
-          <h3>Preset Poses</h3>
-          <div className="pose-buttons">
-            <button className="pose-btn" onClick={() => loadPresetPose('t_pose')}>T-Pose</button>
-            <button className="pose-btn" onClick={() => loadPresetPose('arms_up')}>Arms Up</button>
-            <button className="pose-btn" onClick={() => loadPresetPose('squat')}>Squat</button>
-          </div>
-
-          <h3>Recent Poses</h3>
-          <div className="pose-history">
-            {poseHistory.length === 0 ? (
-              <p className="empty-history">No poses yet. Connect live or try a preset.</p>
-            ) : (
-              poseHistory.slice(-5).reverse().map((pose, idx) => (
-                <div key={idx} className="pose-history-item" onClick={() => setAvatarPose(pose)}>
-                  <span className="pose-time">{new Date(pose.timestamp).toLocaleTimeString()}</span>
-                  <span className="pose-context">{pose.context || 'general'}</span>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
   );
 
   // Settings page content
@@ -686,12 +617,9 @@ function App() {
 
         {/* Protected routes */}
         <Route path="/library" element={<ProtectedRoute><LibraryContent /></ProtectedRoute>} />
-        <Route path="/avatar" element={<ProtectedRoute><AvatarContent /></ProtectedRoute>} />
         <Route path="/reels" element={<ProtectedRoute><div className="sessions-container reels-container-wrapper"><ReelsFeed reels={reels} /></div></ProtectedRoute>} />
-        {/* eslint-disable-next-line no-undef -- lastActivityUpdate from useState (line 61) */}
-        <Route path="/activity" element={<ProtectedRoute><GoogleActivity lastActivityUpdate={lastActivityUpdate} /></ProtectedRoute>} />
+        <Route path="/activity" element={<ProtectedRoute><GoogleActivity lastActivityUpdate={lastActivityUpdate} user={user} /></ProtectedRoute>} />
         <Route path="/mosaic" element={<ProtectedRoute><MosaicField /></ProtectedRoute>} />
-        <Route path="/orbit" element={<ProtectedRoute><DailyOrbit /></ProtectedRoute>} />
         <Route path="/settings" element={<ProtectedRoute><SettingsContent /></ProtectedRoute>} />
 
         {/* Catch all */}

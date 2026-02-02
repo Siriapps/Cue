@@ -38,8 +38,35 @@ def list_events(user_token: str, time_min: Optional[str] = None, time_max: Optio
         return f"Error: {e}"
 
 
+def list_upcoming_events(user_token: str, max_results: int = 10) -> List[Dict[str, Any]]:
+    """List upcoming calendar events (from now). Returns list of dicts with id, summary, start, end, htmlLink."""
+    try:
+        service = _calendar_service(user_token)
+        now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        end = (datetime.utcnow() + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        result = service.events().list(
+            calendarId="primary", timeMin=now, timeMax=end,
+            maxResults=max_results, singleEvents=True, orderBy="startTime"
+        ).execute()
+        events = result.get("items", [])
+        out = []
+        for e in events:
+            out.append({
+                "id": e.get("id"),
+                "summary": e.get("summary") or "(No title)",
+                "start": e.get("start"),
+                "end": e.get("end"),
+                "htmlLink": e.get("htmlLink", ""),
+            })
+        return out
+    except HttpError:
+        return []
+    except Exception:
+        return []
+
+
 def create_event(user_token: str, summary: str, start: str, end: str, description: str = "", attendees: Optional[str] = None) -> str:
-    """Create a calendar event. start/end: RFC3339 or date string. attendees: comma-separated emails."""
+    """Create a calendar event. start/end: RFC3339 or date string. attendees: comma-separated emails. Returns event id and htmlLink."""
     user_id = ""
     try:
         service = _calendar_service(user_token)
@@ -52,8 +79,10 @@ def create_event(user_token: str, summary: str, start: str, end: str, descriptio
         if attendees:
             body["attendees"] = [{"email": e.strip()} for e in attendees.split(",")]
         result = service.events().insert(calendarId="primary", body=body).execute()
-        _log_activity(user_id, "create_event", {"summary": summary, "event_id": result.get("id")})
-        return str(result.get("id", "ok"))
+        event_id = result.get("id", "")
+        html_link = result.get("htmlLink", f"https://calendar.google.com/calendar/event?eid={event_id}")
+        _log_activity(user_id, "create_event", {"summary": summary, "event_id": event_id})
+        return str({"id": event_id, "htmlLink": html_link})
     except HttpError as e:
         return f"Error: {e.resp.status} - {e.content.decode()}"
     except Exception as e:

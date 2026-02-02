@@ -43,6 +43,34 @@ export function HaloStrip(): React.JSX.Element {
   const [suggestionText, setSuggestionText] = useState<string | null>(null);
   const [isSuggesting, setIsSuggesting] = useState(false);
 
+  // Predicted tasks popup state
+  type SuggestedTask = {
+    id?: string;
+    title: string;
+    description: string;
+    service?: string | null;
+    action?: string | null;
+    params?: Record<string, unknown> | null;
+  };
+  const [predictedTasks, setPredictedTasks] = useState<SuggestedTask[]>([]);
+  const [executingTaskId, setExecutingTaskId] = useState<string | null>(null);
+  const [showTaskPanel, setShowTaskPanel] = useState(false);
+
+  // Toast notification state
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Edit task modal state
+  const [editingTask, setEditingTask] = useState<SuggestedTask | null>(null);
+  const [editFormData, setEditFormData] = useState<{
+    to?: string;
+    subject?: string;
+    body?: string;
+    title?: string;
+    date?: string;
+    time?: string;
+    description?: string;
+  }>({});
+
   // Check login status on mount
   useEffect(() => {
     try {
@@ -88,6 +116,43 @@ export function HaloStrip(): React.JSX.Element {
         }
         setCommandPreview(null);
         setIsThinking(false);
+      }
+      // Handle predicted tasks popup
+      if (message.type === "PREDICTED_TASKS_POPUP" && message.payload) {
+        console.log("[cue] Received PREDICTED_TASKS_POPUP:", message.payload);
+        const p = message.payload as { tasks?: SuggestedTask[] };
+        if (p.tasks && p.tasks.length > 0) {
+          console.log(`[cue] Setting ${p.tasks.length} predicted tasks`);
+          setPredictedTasks(p.tasks.slice(0, 5)); // Max 5 tasks
+        }
+      }
+      // Handle task execution result
+      if (message.type === "TASK_EXECUTED" && message.payload) {
+        const p = message.payload as { success?: boolean; taskId?: string; error?: string; open_url?: string; message?: string; promptCopied?: boolean };
+        setExecutingTaskId(null);
+        if (p.success && p.taskId) {
+          // Remove completed task from list
+          setPredictedTasks((prev) => prev.filter((t) => t.id !== p.taskId));
+        }
+        // Show toast notification if prompt was copied or there's a message
+        if (p.promptCopied && p.message) {
+          setToastMessage(p.message);
+          setTimeout(() => setToastMessage(null), 4000);
+        } else if (p.error) {
+          setToastMessage(`Error: ${p.error}`);
+          setTimeout(() => setToastMessage(null), 4000);
+        }
+      }
+      // Handle clipboard copy request (for OpenAI Studio auto-open)
+      if (message.type === "COPY_TO_CLIPBOARD" && message.payload) {
+        const p = message.payload as { text?: string };
+        if (p.text) {
+          navigator.clipboard.writeText(p.text).then(() => {
+            console.log("[cue] Copied prompt to clipboard for OpenAI Studio");
+          }).catch((err) => {
+            console.error("[cue] Failed to copy to clipboard:", err);
+          });
+        }
       }
     };
     chrome.runtime.onMessage.addListener(listener);
@@ -545,6 +610,133 @@ export function HaloStrip(): React.JSX.Element {
     setIsLive(true);
   };
 
+  // Predicted Tasks handlers
+  const handleAcceptTask = (task: SuggestedTask) => {
+    setExecutingTaskId(task.id || null);
+
+    // If no service/action, treat as AI research task - open Gemini with the prompt
+    if (!task.service || !task.action) {
+      const prompt = task.description || task.title || "Help me with this task";
+      try {
+        chrome.runtime.sendMessage({
+          type: "EXECUTE_SUGGESTED_TASK",
+          service: "gemini_chat",
+          action: "open",
+          params: { prompt },
+          taskId: task.id,
+        });
+      } catch (e) {
+        console.error("[cue] Failed to execute task:", e);
+        setExecutingTaskId(null);
+      }
+      return;
+    }
+
+    try {
+      chrome.runtime.sendMessage({
+        type: "EXECUTE_SUGGESTED_TASK",
+        service: task.service,
+        action: task.action,
+        params: task.params || {},
+        taskId: task.id,
+      });
+    } catch (e) {
+      console.error("[cue] Failed to execute task:", e);
+      setExecutingTaskId(null);
+    }
+  };
+
+  const handleDismissTask = (taskId: string | undefined) => {
+    if (!taskId) {
+      // No ID, just remove from local state
+      setPredictedTasks((prev) => prev.slice(1));
+      return;
+    }
+    // Mark as dismissed in backend and remove from local state
+    setPredictedTasks((prev) => prev.filter((t) => t.id !== taskId));
+    try {
+      fetch(`${import.meta.env.VITE_API_BASE_URL || "http://localhost:8000"}/suggested_tasks/${taskId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "dismissed" }),
+      }).catch(() => {});
+    } catch {
+      // Ignore errors
+    }
+  };
+
+  const handleDismissAllTasks = () => {
+    // Dismiss all tasks
+    predictedTasks.forEach((task) => {
+      if (task.id) {
+        try {
+          fetch(`${import.meta.env.VITE_API_BASE_URL || "http://localhost:8000"}/suggested_tasks/${task.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ status: "dismissed" }),
+          }).catch(() => {});
+        } catch {
+          // Ignore
+        }
+      }
+    });
+    setPredictedTasks([]);
+  };
+
+  // Edit task handlers
+  const handleEditTask = (task: SuggestedTask) => {
+    setEditingTask(task);
+    // Pre-fill form data from task params
+    const params = task.params || {};
+    setEditFormData({
+      to: (params.to as string) || "",
+      subject: (params.subject as string) || "",
+      body: (params.body as string) || (params.message as string) || "",
+      title: (params.title as string) || (params.summary as string) || task.title || "",
+      date: (params.date as string) || "",
+      time: (params.time as string) || (params.start as string) || "",
+      description: (params.description as string) || task.description || "",
+    });
+  };
+
+  const handleEditFormChange = (field: string, value: string) => {
+    setEditFormData((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const handleEditSubmit = () => {
+    if (!editingTask) return;
+
+    // Build updated params based on service type
+    const updatedParams: Record<string, unknown> = { ...(editingTask.params || {}) };
+
+    if (editingTask.service === "gmail") {
+      if (editFormData.to) updatedParams.to = editFormData.to;
+      if (editFormData.subject) updatedParams.subject = editFormData.subject;
+      if (editFormData.body) updatedParams.body = editFormData.body;
+    } else if (editingTask.service === "calendar") {
+      if (editFormData.title) updatedParams.summary = editFormData.title;
+      if (editFormData.date) updatedParams.date = editFormData.date;
+      if (editFormData.time) updatedParams.start = editFormData.time;
+      if (editFormData.description) updatedParams.description = editFormData.description;
+    } else if (editingTask.service === "tasks") {
+      if (editFormData.title) updatedParams.title = editFormData.title;
+      if (editFormData.description) updatedParams.notes = editFormData.description;
+    } else {
+      // Generic: update description/prompt
+      if (editFormData.description) updatedParams.prompt = editFormData.description;
+    }
+
+    // Execute the task with updated params
+    const updatedTask = { ...editingTask, params: updatedParams };
+    setEditingTask(null);
+    handleAcceptTask(updatedTask);
+  };
+
+  const handleEditCancel = () => {
+    setEditingTask(null);
+    setEditFormData({});
+  };
+
   // Listen for messages from background
   useEffect(() => {
     try {
@@ -727,7 +919,235 @@ export function HaloStrip(): React.JSX.Element {
           <span>Library</span>
         </button>
 
+        {/* Notification Bell with Task Count */}
+        <div
+          className="halo-notifications"
+          onClick={() => {
+            const opening = !showTaskPanel;
+            setShowTaskPanel(opening);
+            // Notify background that user viewed suggestions (starts cooldown)
+            if (opening && predictedTasks.length > 0) {
+              try {
+                chrome.runtime.sendMessage({ type: "USER_VIEWED_SUGGESTIONS" });
+              } catch { /* Extension context invalidated */ }
+            }
+          }}
+        >
+          <svg className="notification-bell" viewBox="0 0 24 24" fill="currentColor" width="18" height="18">
+            <path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/>
+          </svg>
+          {predictedTasks.length > 0 && (
+            <span className="notification-badge">{predictedTasks.length}</span>
+          )}
+        </div>
+
       </div>
+
+      {/* Task Panel Dropdown */}
+      {showTaskPanel && predictedTasks.length > 0 && (
+        <div className="halo-task-panel">
+          <div className="task-panel-header">
+            <span className="task-panel-title">Suggested Tasks</span>
+            <button className="dismiss-all-btn" onClick={() => { handleDismissAllTasks(); setShowTaskPanel(false); }} title="Dismiss all">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                <line x1="18" y1="6" x2="6" y2="18"/>
+                <line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          </div>
+          <div className="task-panel-list">
+            {predictedTasks.map((task, index) => (
+              <div key={task.id || index} className="task-panel-card">
+                <div className="task-card-content">
+                  <div className="task-card-title">{task.title}</div>
+                  {task.description && (
+                    <div className="task-card-description">{task.description}</div>
+                  )}
+                  {task.service && (
+                    <span className="task-card-service">{task.service}</span>
+                  )}
+                </div>
+                <div className="task-card-actions">
+                  <button
+                    className="task-edit-btn"
+                    onClick={() => handleEditTask(task)}
+                    title="Edit details"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="12" height="12">
+                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                    </svg>
+                  </button>
+                  <button
+                    className="task-accept-btn"
+                    onClick={() => handleAcceptTask(task)}
+                    disabled={executingTaskId === task.id}
+                  >
+                    {executingTaskId === task.id ? "..." : "Accept"}
+                  </button>
+                  <button
+                    className="task-dismiss-btn"
+                    onClick={() => handleDismissTask(task.id)}
+                    title="Dismiss"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="12" height="12">
+                      <line x1="18" y1="6" x2="6" y2="18"/>
+                      <line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Toast Notification */}
+      {toastMessage && (
+        <div className="halo-toast">
+          <span>{toastMessage}</span>
+          <button onClick={() => setToastMessage(null)}>×</button>
+        </div>
+      )}
+
+      {/* Edit Task Modal */}
+      {editingTask && (
+        <div className="halo-edit-modal-overlay" onClick={handleEditCancel}>
+          <div className="halo-edit-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="halo-edit-modal-header">
+              <span>Edit Task</span>
+              <button onClick={handleEditCancel}>×</button>
+            </div>
+            <div className="halo-edit-modal-body">
+              <div className="halo-edit-task-title">{editingTask.title}</div>
+
+              {/* Gmail-specific fields */}
+              {editingTask.service === "gmail" && (
+                <>
+                  <label className="halo-edit-label">
+                    To:
+                    <input
+                      type="email"
+                      value={editFormData.to || ""}
+                      onChange={(e) => handleEditFormChange("to", e.target.value)}
+                      placeholder="recipient@example.com"
+                      className="halo-edit-input"
+                    />
+                  </label>
+                  <label className="halo-edit-label">
+                    Subject:
+                    <input
+                      type="text"
+                      value={editFormData.subject || ""}
+                      onChange={(e) => handleEditFormChange("subject", e.target.value)}
+                      placeholder="Email subject"
+                      className="halo-edit-input"
+                    />
+                  </label>
+                  <label className="halo-edit-label">
+                    Message:
+                    <textarea
+                      value={editFormData.body || ""}
+                      onChange={(e) => handleEditFormChange("body", e.target.value)}
+                      placeholder="Email body"
+                      className="halo-edit-textarea"
+                      rows={3}
+                    />
+                  </label>
+                </>
+              )}
+
+              {/* Calendar-specific fields */}
+              {editingTask.service === "calendar" && (
+                <>
+                  <label className="halo-edit-label">
+                    Event Title:
+                    <input
+                      type="text"
+                      value={editFormData.title || ""}
+                      onChange={(e) => handleEditFormChange("title", e.target.value)}
+                      placeholder="Meeting title"
+                      className="halo-edit-input"
+                    />
+                  </label>
+                  <label className="halo-edit-label">
+                    Date:
+                    <input
+                      type="date"
+                      value={editFormData.date || ""}
+                      onChange={(e) => handleEditFormChange("date", e.target.value)}
+                      className="halo-edit-input"
+                    />
+                  </label>
+                  <label className="halo-edit-label">
+                    Time:
+                    <input
+                      type="time"
+                      value={editFormData.time || ""}
+                      onChange={(e) => handleEditFormChange("time", e.target.value)}
+                      className="halo-edit-input"
+                    />
+                  </label>
+                  <label className="halo-edit-label">
+                    Description:
+                    <textarea
+                      value={editFormData.description || ""}
+                      onChange={(e) => handleEditFormChange("description", e.target.value)}
+                      placeholder="Event description"
+                      className="halo-edit-textarea"
+                      rows={2}
+                    />
+                  </label>
+                </>
+              )}
+
+              {/* Tasks-specific fields */}
+              {editingTask.service === "tasks" && (
+                <>
+                  <label className="halo-edit-label">
+                    Task Title:
+                    <input
+                      type="text"
+                      value={editFormData.title || ""}
+                      onChange={(e) => handleEditFormChange("title", e.target.value)}
+                      placeholder="Task title"
+                      className="halo-edit-input"
+                    />
+                  </label>
+                  <label className="halo-edit-label">
+                    Notes:
+                    <textarea
+                      value={editFormData.description || ""}
+                      onChange={(e) => handleEditFormChange("description", e.target.value)}
+                      placeholder="Task notes"
+                      className="halo-edit-textarea"
+                      rows={2}
+                    />
+                  </label>
+                </>
+              )}
+
+              {/* Generic/AI chat fields */}
+              {(!editingTask.service || !["gmail", "calendar", "tasks"].includes(editingTask.service)) && (
+                <label className="halo-edit-label">
+                  Prompt/Description:
+                  <textarea
+                    value={editFormData.description || ""}
+                    onChange={(e) => handleEditFormChange("description", e.target.value)}
+                    placeholder="Edit the prompt or description"
+                    className="halo-edit-textarea"
+                    rows={4}
+                  />
+                </label>
+              )}
+            </div>
+            <div className="halo-edit-modal-footer">
+              <button className="halo-edit-cancel-btn" onClick={handleEditCancel}>Cancel</button>
+              <button className="halo-edit-submit-btn" onClick={handleEditSubmit}>Execute</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Minimize Button - Right Side */}
       <button className="halo-collapse-btn" onClick={toggleCollapse} title="Minimize">
@@ -893,6 +1313,20 @@ export function HaloStrip(): React.JSX.Element {
                 )}
               </ul>
             </div>
+            <div className="halo-context-section">
+              <div className="halo-context-section-title">Recent sites</div>
+              <ul className="halo-context-list">
+                {((contextSnapshot as any)?.recent_sites ?? []).slice(0, 15).map((s: any, i: number) => (
+                  <li key={`site-${i}`} className="halo-context-item halo-context-site">
+                    <a href={s.url} target="_blank" rel="noopener noreferrer" className="halo-context-link">
+                      {s.title || s.domain}
+                    </a>
+                    <span className="halo-context-duration">{Math.round(s.durationMs / 1000)}s</span>
+                  </li>
+                ))}
+                {(!(contextSnapshot as any)?.recent_sites?.length) && <li className="halo-context-empty">No recent sites</li>}
+              </ul>
+            </div>
           </div>
           <button type="button" className="halo-btn halo-btn-suggest" onClick={suggestFromContext} disabled={isSuggesting}>
             {isSuggesting ? "Suggesting…" : "Suggest"}
@@ -905,6 +1339,8 @@ export function HaloStrip(): React.JSX.Element {
           )}
         </div>
       )}
+
+      {/* Predicted Tasks Popup is now rendered outside Shadow DOM - see predicted_tasks_popup.tsx */}
     </div>
   );
 }

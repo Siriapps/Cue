@@ -11,8 +11,8 @@ from google import genai
 
 logger = logging.getLogger(__name__)
 
-# Public API: call_gemini and generate_content (alias) for text; video helpers for Veo
-__all__ = ["call_gemini", "generate_content", "generate_video_from_summary", "generate_video_from_summary_sync"]
+# Public API: call_gemini and generate_content (alias) for text; image; video helpers for Veo
+__all__ = ["call_gemini", "generate_content", "generate_session_image", "generate_video_from_summary", "generate_video_from_summary_sync"]
 
 # API call counter for tracking
 _api_call_count = 0
@@ -144,6 +144,49 @@ def call_gemini(
 
 # Alias for callers that expect the old name (e.g. generate_content)
 generate_content = call_gemini
+
+
+# ================== Image generation (session card thumbnails) ==================
+
+
+def _get_image_model() -> str:
+    """Use GEMINI_IMAGE_MODEL from env; default nano-banana-pro-preview."""
+    configured = os.getenv("GEMINI_IMAGE_MODEL", "").strip()
+    if configured:
+        return configured
+    return "nano-banana-pro-preview"
+
+
+def generate_session_image(prompt: str) -> Dict[str, Any]:
+    """
+    Generate a single image from a text prompt using the image model.
+    Returns {"image_base64": str, "mime_type": str} or {"error": str}.
+    Uses same API key as text; URL pattern: .../models/{model}:generateContent.
+    """
+    api_key = _get_api_key()
+    model = _get_image_model()
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    payload: Dict[str, Any] = {
+        "contents": [{"role": "user", "parts": [{"text": prompt[:2000]}]}],
+        "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
+    }
+    try:
+        response = requests.post(url, params={"key": api_key}, json=payload, timeout=60)
+        response.raise_for_status()
+        data = response.json()
+    except requests.RequestException as e:
+        logger.warning("[Gemini] Session image request failed: %s", e)
+        return {"error": str(e)}
+    candidates = data.get("candidates", [])
+    if not candidates:
+        return {"error": "No candidates returned from image model"}
+    parts = candidates[0].get("content", {}).get("parts", [])
+    for part in parts:
+        inline = part.get("inlineData")
+        if inline and inline.get("data"):
+            mime = inline.get("mimeType", "image/png")
+            return {"image_base64": inline["data"], "mime_type": mime}
+    return {"error": "No image in response"}
 
 
 # ================== Video generation (Veo via Gemini API) ==================

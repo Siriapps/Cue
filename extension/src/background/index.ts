@@ -2,6 +2,7 @@ import {
   getCueContext,
   setRecentSearches,
   addRecentSearch,
+  addRecentSite,
   clearCueContext,
   buildContextBlob,
   mergeChatMessages,
@@ -163,7 +164,468 @@ chrome.history.onVisited.addListener(async (item) => {
     engine: inferSearchEngine(item.url),
     visitedAt: item.lastVisitTime ?? Date.now(),
   });
+  // Check for context change after search (triggers if category changed + cooldown elapsed)
+  checkContextAndTrigger(item.url, "search_query");
 });
+
+// ================== AUTO-SUGGEST TRIGGERS ==================
+// Smart context-based triggering: only suggest when domain category changes + 5-min cooldown
+
+// Domain category mapping (local, no API calls needed)
+const DOMAIN_CATEGORIES: Record<string, string> = {
+  // Coding
+  "github.com": "coding",
+  "stackoverflow.com": "coding",
+  "leetcode.com": "coding",
+  "codepen.io": "coding",
+  "codesandbox.io": "coding",
+  "replit.com": "coding",
+  "gitlab.com": "coding",
+  "bitbucket.org": "coding",
+  "npmjs.com": "coding",
+  "pypi.org": "coding",
+  // Email
+  "gmail.com": "email",
+  "mail.google.com": "email",
+  "outlook.com": "email",
+  "outlook.live.com": "email",
+  "mail.yahoo.com": "email",
+  // Calendar
+  "calendar.google.com": "calendar",
+  "outlook.office.com": "calendar",
+  // Docs/Productivity
+  "docs.google.com": "docs",
+  "sheets.google.com": "docs",
+  "slides.google.com": "docs",
+  "drive.google.com": "docs",
+  "notion.so": "docs",
+  "figma.com": "docs",
+  // Social
+  "twitter.com": "social",
+  "x.com": "social",
+  "linkedin.com": "social",
+  "facebook.com": "social",
+  "reddit.com": "social",
+  // Shopping
+  "amazon.com": "shopping",
+  "ebay.com": "shopping",
+  "etsy.com": "shopping",
+  // Video
+  "youtube.com": "video",
+  "netflix.com": "video",
+  "twitch.tv": "video",
+  // AI/Research
+  "chat.openai.com": "ai",
+  "gemini.google.com": "ai",
+  "claude.ai": "ai",
+  "perplexity.ai": "ai",
+  // News
+  "news.ycombinator.com": "news",
+  "techcrunch.com": "news",
+  "bbc.com": "news",
+  "cnn.com": "news",
+};
+
+// ================== SUGGESTION STATE MACHINE ==================
+// States: ACTIVE -> COOLDOWN -> INTENT_CHECK -> LOCKOUT -> ACTIVE (or PIVOT reset)
+
+type SuggestionState = "active" | "cooldown" | "intent_check" | "lockout";
+let suggestionState: SuggestionState = "active";
+let lastSuggestCategory = "";
+let lastAutoSuggestTime = 0;
+let lastSuggestedTopicKeywords: string[] = [];
+let lockoutStartTime = 0;
+
+// Timing constants
+const AUTO_SUGGEST_COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown after user interaction
+const LOCKOUT_DURATION_MS = 5 * 60 * 1000; // 5 minutes lockout if same topic
+const PAGE_DWELL_TIME_MS = 60000; // 1 minute on page can also trigger
+const MAX_SUGGESTIONS_PER_BATCH = 5; // Show max 5 tasks per suggestion
+
+// Session task limit - max 50 tasks per session, decrement when user accepts
+let sessionTaskCount = 0;
+const MAX_SESSION_TASKS = 50;
+
+// Per-tab timers for page dwell time
+const pageDwellTimers: Record<number, ReturnType<typeof setTimeout>> = {};
+const tabUrls: Record<number, string> = {};
+
+// ================== URL TRAJECTORY TRACKING ==================
+// Track last 10 URLs with metadata for deep context
+
+type URLTrajectoryEntry = {
+  url: string;
+  title: string;
+  domain: string;
+  category: string;
+  timestamp: number;
+  durationMs?: number;
+};
+
+const urlTrajectory: URLTrajectoryEntry[] = [];
+const MAX_TRAJECTORY_SIZE = 10;
+let lastTrajectoryUpdate = 0;
+
+function addToTrajectory(url: string, title: string) {
+  const now = Date.now();
+
+  // Update duration of previous entry and save to CueContext if >10s
+  if (urlTrajectory.length > 0) {
+    const prev = urlTrajectory[urlTrajectory.length - 1];
+    prev.durationMs = now - prev.timestamp;
+
+    // Save to CueContext if user stayed >10 seconds (addRecentSite handles the threshold)
+    if (prev.durationMs >= 10000) {
+      addRecentSite({
+        url: prev.url,
+        title: prev.title,
+        domain: prev.domain,
+        visitedAt: prev.timestamp,
+        durationMs: prev.durationMs,
+      }).catch(() => {});
+    }
+  }
+
+  try {
+    const urlObj = new URL(url);
+    const domain = urlObj.hostname.replace("www.", "");
+    const category = getDomainCategory(url);
+
+    // Don't add duplicate consecutive URLs
+    if (urlTrajectory.length > 0 && urlTrajectory[urlTrajectory.length - 1].url === url) {
+      return;
+    }
+
+    urlTrajectory.push({
+      url,
+      title: title || domain,
+      domain,
+      category,
+      timestamp: now,
+    });
+
+    // Keep only last MAX_TRAJECTORY_SIZE entries
+    while (urlTrajectory.length > MAX_TRAJECTORY_SIZE) {
+      urlTrajectory.shift();
+    }
+
+    lastTrajectoryUpdate = now;
+
+    // Store in chrome.storage for persistence
+    chrome.storage.local.set({ urlTrajectory: urlTrajectory.slice() });
+  } catch {
+    // Invalid URL, skip
+  }
+}
+
+function getTrajectoryContext(): string {
+  if (urlTrajectory.length === 0) return "";
+
+  const lines = urlTrajectory.map((entry, i) => {
+    const ago = Math.round((Date.now() - entry.timestamp) / 60000);
+    const duration = entry.durationMs ? ` (${Math.round(entry.durationMs / 1000)}s)` : "";
+    return `${i + 1}. [${entry.category}] ${entry.title}${duration} - ${ago}m ago`;
+  });
+
+  return `Active Browsing Trajectory (last ${urlTrajectory.length} pages):\n${lines.join("\n")}`;
+}
+
+// Extract keywords from URL trajectory for topic detection
+function extractTrajectoryKeywords(): string[] {
+  const keywords: string[] = [];
+
+  urlTrajectory.forEach((entry) => {
+    // Add category
+    keywords.push(entry.category);
+
+    // Extract words from title
+    const titleWords = entry.title
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length > 3);
+    keywords.push(...titleWords.slice(0, 5));
+
+    // Extract path keywords
+    try {
+      const path = new URL(entry.url).pathname;
+      const pathWords = path
+        .replace(/[^a-z0-9]/gi, " ")
+        .toLowerCase()
+        .split(/\s+/)
+        .filter((w) => w.length > 3);
+      keywords.push(...pathWords.slice(0, 3));
+    } catch { /* ignore */ }
+  });
+
+  // Deduplicate and return most common
+  const freq: Record<string, number> = {};
+  keywords.forEach((k) => { freq[k] = (freq[k] || 0) + 1; });
+
+  return Object.entries(freq)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([k]) => k);
+}
+
+// Check if current topic matches last suggested topic (for lockout)
+function isTopicSimilar(currentKeywords: string[], lastKeywords: string[]): boolean {
+  if (lastKeywords.length === 0) return false;
+
+  const matches = currentKeywords.filter((k) => lastKeywords.includes(k));
+  const similarity = matches.length / Math.max(currentKeywords.length, lastKeywords.length);
+
+  return similarity > 0.4; // 40% keyword overlap = same topic
+}
+
+// Load trajectory from storage on startup
+chrome.storage.local.get(["urlTrajectory"], (result) => {
+  if (result.urlTrajectory && Array.isArray(result.urlTrajectory)) {
+    urlTrajectory.push(...result.urlTrajectory.slice(-MAX_TRAJECTORY_SIZE));
+    console.log(`[cue] Loaded ${urlTrajectory.length} trajectory entries from storage`);
+  }
+});
+
+// Get domain category from URL
+function getDomainCategory(url: string): string {
+  try {
+    const hostname = new URL(url).hostname.replace("www.", "");
+    // Check exact match first
+    if (DOMAIN_CATEGORIES[hostname]) {
+      return DOMAIN_CATEGORIES[hostname];
+    }
+    // Check if any key is contained in hostname (e.g., "mail.google.com" contains "google.com")
+    for (const [domain, category] of Object.entries(DOMAIN_CATEGORIES)) {
+      if (hostname.includes(domain) || hostname.endsWith("." + domain)) {
+        return category;
+      }
+    }
+    return "general";
+  } catch {
+    return "general";
+  }
+}
+
+// Check if we should trigger auto-suggest based on enhanced state machine
+function shouldTriggerSuggestion(url: string): boolean {
+  const category = getDomainCategory(url);
+  const now = Date.now();
+  const currentKeywords = extractTrajectoryKeywords();
+
+  // State machine logic
+  switch (suggestionState) {
+    case "cooldown": {
+      // In cooldown - check if 2 minutes have passed
+      if (now - lastAutoSuggestTime < AUTO_SUGGEST_COOLDOWN_MS) {
+        const remaining = Math.round((AUTO_SUGGEST_COOLDOWN_MS - (now - lastAutoSuggestTime)) / 1000);
+        console.log(`[cue] State: COOLDOWN - ${remaining}s remaining`);
+        return false;
+      }
+
+      // Cooldown expired - move to intent check
+      suggestionState = "intent_check";
+      console.log("[cue] State: COOLDOWN -> INTENT_CHECK");
+      // Fall through to intent_check
+    }
+
+    case "intent_check": {
+      // Check if topic changed (pivot detection)
+      if (!isTopicSimilar(currentKeywords, lastSuggestedTopicKeywords)) {
+        // Topic changed! Pivot detected - reset to active
+        console.log(`[cue] PIVOT DETECTED - topic changed from [${lastSuggestedTopicKeywords.slice(0, 3).join(", ")}] to [${currentKeywords.slice(0, 3).join(", ")}]`);
+        suggestionState = "active";
+        // Immediate trigger
+        break;
+      }
+
+      // Same topic - enter lockout
+      console.log(`[cue] Same topic detected - entering LOCKOUT`);
+      suggestionState = "lockout";
+      lockoutStartTime = now;
+      return false;
+    }
+
+    case "lockout": {
+      // In lockout - check if 5 minutes have passed
+      if (now - lockoutStartTime < LOCKOUT_DURATION_MS) {
+        const remaining = Math.round((LOCKOUT_DURATION_MS - (now - lockoutStartTime)) / 1000);
+
+        // But still check for pivot detection
+        if (!isTopicSimilar(currentKeywords, lastSuggestedTopicKeywords)) {
+          console.log(`[cue] PIVOT in LOCKOUT - topic changed, resetting to ACTIVE`);
+          suggestionState = "active";
+          break;
+        }
+
+        console.log(`[cue] State: LOCKOUT - ${remaining}s remaining (suppressing same-topic suggestions)`);
+        return false;
+      }
+
+      // Lockout expired - back to active
+      console.log("[cue] State: LOCKOUT -> ACTIVE");
+      suggestionState = "active";
+      break;
+    }
+
+    case "active":
+    default:
+      // Active state - check for category change
+      break;
+  }
+
+  // Now in ACTIVE state - check if context/category changed
+  if (category !== lastSuggestCategory) {
+    console.log(`[cue] Auto-suggest: context changed from "${lastSuggestCategory}" to "${category}"`);
+    lastSuggestCategory = category;
+    lastAutoSuggestTime = now;
+    lastSuggestedTopicKeywords = currentKeywords.slice();
+    suggestionState = "cooldown"; // Enter cooldown after trigger
+    return true;
+  }
+
+  console.log(`[cue] Auto-suggest: same category "${category}", state: ${suggestionState}`);
+  return false;
+}
+
+// Called when user views/interacts with suggestions - starts cooldown
+function onUserViewedSuggestions() {
+  lastAutoSuggestTime = Date.now();
+  suggestionState = "cooldown";
+  console.log("[cue] User viewed suggestions - entering COOLDOWN");
+}
+
+function checkContextAndTrigger(url: string, trigger: string) {
+  if (shouldTriggerSuggestion(url)) {
+    console.log(`[cue] Triggering auto-suggest (${trigger})`);
+    triggerAutoSuggest(trigger);
+  }
+}
+
+function startPageDwellTimer(tabId: number, url: string) {
+  // Clear existing timer for this tab
+  if (pageDwellTimers[tabId]) {
+    clearTimeout(pageDwellTimers[tabId]);
+  }
+
+  // Store URL to detect navigation
+  tabUrls[tabId] = url;
+
+  // Start new timer
+  pageDwellTimers[tabId] = setTimeout(() => {
+    // Check if still on same URL
+    if (tabUrls[tabId] === url) {
+      checkContextAndTrigger(url, "page_dwell");
+    }
+    delete pageDwellTimers[tabId];
+  }, PAGE_DWELL_TIME_MS);
+}
+
+// Listen for tab updates to track page dwell time, URL trajectory, AND check context changes
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === "complete" && tab.url && !tab.url.startsWith("chrome://")) {
+    // Add to URL trajectory for deep context
+    addToTrajectory(tab.url, tab.title || "");
+
+    startPageDwellTimer(tabId, tab.url);
+    // Check for context change on page load
+    checkContextAndTrigger(tab.url, "context_change");
+  }
+});
+
+// Clean up timers when tabs are closed
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (pageDwellTimers[tabId]) {
+    clearTimeout(pageDwellTimers[tabId]);
+    delete pageDwellTimers[tabId];
+  }
+  delete tabUrls[tabId];
+});
+
+async function triggerAutoSuggest(trigger: string) {
+  // Check session task limit
+  if (sessionTaskCount >= MAX_SESSION_TASKS) {
+    console.log("[cue] Session task limit reached (50). Accept a task to generate more.");
+    return;
+  }
+
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const ctx = await getCueContext();
+    let contextBlob = buildContextBlob(ctx);
+
+    // Add URL trajectory for deep context
+    const trajectoryContext = getTrajectoryContext();
+    if (trajectoryContext) {
+      contextBlob = `${contextBlob}\n\n${trajectoryContext}`;
+    }
+
+    // Fallback: if context is empty, use current page info
+    if (!contextBlob.trim()) {
+      console.log("[cue] Context empty, using current page only");
+      contextBlob = `Currently browsing: ${tab?.title || "Unknown page"}\nURL: ${tab?.url || ""}`;
+    }
+
+    console.log(`[cue] Auto-suggest triggered by: ${trigger}`);
+    console.log(`[cue] State machine: ${suggestionState}, trajectory: ${urlTrajectory.length} entries`);
+
+    const response = await fetch(`${API_BASE}/suggest_tasks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        context_blob: contextBlob,
+        page_title: tab?.title || "",
+        current_url: tab?.url || "",
+        trajectory: urlTrajectory.slice(), // Include raw trajectory for backend
+      }),
+    });
+
+    const data = await response.json();
+
+    if (data.success && data.tasks && data.tasks.length > 0) {
+      // Limit to MAX_SUGGESTIONS_PER_BATCH (5 tasks)
+      const limitedTasks = data.tasks.slice(0, MAX_SUGGESTIONS_PER_BATCH);
+      console.log(`[cue] Auto-suggest returned ${limitedTasks.length} tasks (capped from ${data.tasks.length}):`, limitedTasks.map((t: any) => t.title));
+
+      // Track session task count
+      sessionTaskCount += limitedTasks.length;
+      console.log(`[cue] Session task count: ${sessionTaskCount}/${MAX_SESSION_TASKS}`);
+
+      // Store suggested topic keywords for lockout comparison
+      lastSuggestedTopicKeywords = extractTrajectoryKeywords();
+
+      // Send to content script to show notification
+      if (tab?.id) {
+        console.log(`[cue] Sending PREDICTED_TASKS_POPUP to tab ${tab.id}`);
+        chrome.tabs.sendMessage(tab.id, {
+          type: "PREDICTED_TASKS_POPUP",
+          payload: { tasks: limitedTasks, trigger },
+        }).then(() => {
+          console.log("[cue] PREDICTED_TASKS_POPUP sent successfully");
+          // Note: cooldown will start when user views the suggestions
+        }).catch((e) => {
+          console.error("[cue] Failed to send PREDICTED_TASKS_POPUP:", e);
+          // Fallback: try sending to all tabs
+          chrome.tabs.query({}, (tabs) => {
+            tabs.forEach((t) => {
+              if (t.id && t.url && !t.url.startsWith("chrome://")) {
+                chrome.tabs.sendMessage(t.id, {
+                  type: "PREDICTED_TASKS_POPUP",
+                  payload: { tasks: limitedTasks, trigger },
+                }).catch(() => {});
+              }
+            });
+          });
+        });
+      } else {
+        console.log("[cue] No active tab id to send popup to");
+      }
+    } else {
+      console.log("[cue] Auto-suggest returned no tasks or failed:", data.error || "empty");
+    }
+  } catch (error) {
+    console.error("[cue] Auto-suggest error:", error);
+  }
+}
 
 // Session Audio Capture is now handled directly in content script (session_recorder.ts)
 // using navigator.mediaDevices.getUserMedia() - no offscreen documents needed!
@@ -578,25 +1040,223 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === "CONTEXT_SUGGEST") {
     (async () => {
       try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         const ctx = await getCueContext();
         const blob = buildContextBlob(ctx);
-        if (!blob.trim()) {
+        const pageTitle = tab?.title ?? "";
+        const currentUrl = tab?.url ?? "";
+        if (!blob.trim() && !pageTitle && !currentUrl) {
           sendResponse({ success: false, error: "No context to suggest from" });
           return;
         }
-        const res = await fetch(`${API_BASE}/suggest`, {
+        const contextBlob = blob.trim() || `Currently viewing: ${pageTitle}\n${currentUrl}`;
+        const res = await fetch(`${API_BASE}/suggest_tasks`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ context_blob: blob }),
+          body: JSON.stringify({
+            context_blob: contextBlob,
+            page_title: pageTitle,
+            current_url: currentUrl,
+          }),
         });
         const data = await res.json();
-        if (data.success && data.answer) {
-          sendResponse({ success: true, suggestion: data.answer });
+        if (data.success && data.tasks && data.tasks.length > 0) {
+          const count = data.tasks.length;
+          const summary = count === 1
+            ? (data.tasks[0].title || "1 task")
+            : `${count} tasks`;
+          sendResponse({
+            success: true,
+            suggestion: `${summary} added to AI Task Automation. View in dashboard.`,
+            tasksCount: count,
+            tasks: data.tasks,
+          });
         } else {
-          sendResponse({ success: false, error: data.error || "Suggest failed" });
+          sendResponse({
+            success: false,
+            error: data.error || "No tasks generated. Try more context.",
+          });
         }
       } catch (e: any) {
         sendResponse({ success: false, error: e?.message || "Suggest failed" });
+      }
+    })();
+    return true;
+  }
+
+  // Execute a suggested task (from auto-suggest popup)
+  if (message.type === "EXECUTE_SUGGESTED_TASK") {
+    (async () => {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        const userToken = await getFreshToken();
+
+        if (!userToken) {
+          sendResponse({ success: false, error: "Please sign in with Google first.", requires_auth: true });
+          if (tab?.id) {
+            chrome.tabs.sendMessage(tab.id, {
+              type: "TASK_EXECUTED",
+              payload: { success: false, error: "Please sign in with Google first." },
+            });
+          }
+          return;
+        }
+
+        const { service, action, params, taskId } = message;
+
+        // Handle Gemini, Antigravity, and OpenAI Studio - auto-open with context prompt
+        if (service === "gemini_chat" || service === "antigravity" || service === "openai_studio") {
+          console.log(`[cue] Auto-opening ${service} with context prompt`);
+
+          // Build context-rich prompt from task params and page context
+          const contextParts: string[] = [];
+
+          // Add task description/title as main prompt
+          if (params?.prompt) {
+            contextParts.push(params.prompt);
+          } else if (params?.title) {
+            contextParts.push(params.title);
+          } else if (params?.description) {
+            contextParts.push(params.description);
+          } else if (action) {
+            contextParts.push(action);
+          }
+
+          // Add page context if available
+          if (tab?.title && tab?.url) {
+            contextParts.push(`\n\nContext: I was browsing "${tab.title}" (${tab.url})`);
+          }
+
+          // Add any additional context from params
+          if (params?.context) {
+            contextParts.push(`\n\nAdditional context: ${params.context}`);
+          }
+
+          const fullPrompt = contextParts.join("");
+
+          let url = "";
+          let userMessage = "";
+
+          if (service === "gemini_chat") {
+            // Open Gemini and copy prompt to clipboard (URL params don't populate the text box)
+            url = `https://gemini.google.com/app`;
+            userMessage = "Opened Gemini - prompt copied to clipboard, paste with Ctrl+V";
+          } else if (service === "antigravity") {
+            // Open Antigravity web app and copy prompt to clipboard
+            // User can paste into desktop app or use web version
+            url = `https://labs.google.com/search`;
+            userMessage = "Prompt copied! Open Antigravity desktop app and paste (Ctrl+V), or use the web version";
+          } else if (service === "openai_studio") {
+            url = `https://chat.openai.com/`;
+            userMessage = "Opened ChatGPT - prompt copied to clipboard, paste with Ctrl+V";
+          }
+
+          // Copy prompt to clipboard FIRST (before opening new tab to avoid race condition)
+          if (tab?.id) {
+            try {
+              await chrome.tabs.sendMessage(tab.id, {
+                type: "COPY_TO_CLIPBOARD",
+                payload: { text: fullPrompt },
+              });
+              // Wait a moment for clipboard to be ready
+              await new Promise(resolve => setTimeout(resolve, 100));
+            } catch (e) {
+              console.warn("[cue] Could not copy to clipboard:", e);
+            }
+          }
+
+          // THEN open the new tab
+          console.log(`[cue] Opening ${service} at: ${url}`);
+          chrome.tabs.create({ url });
+
+          // Mark task as completed
+          if (taskId) {
+            try {
+              await fetch(`${API_BASE}/suggested_tasks/${taskId}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ status: "completed", open_url: url }),
+              });
+              // Decrement session task count to allow generating more
+              sessionTaskCount = Math.max(0, sessionTaskCount - 1);
+              console.log(`[cue] Task completed. Session count: ${sessionTaskCount}/${MAX_SESSION_TASKS}`);
+            } catch (e) {
+              console.error("[cue] Failed to mark task as completed:", e);
+            }
+          }
+
+          const result = { success: true, message: userMessage, open_url: url, promptCopied: true };
+          sendResponse(result);
+
+          if (tab?.id) {
+            chrome.tabs.sendMessage(tab.id, {
+              type: "TASK_EXECUTED",
+              payload: { ...result, taskId },
+            });
+          }
+          return;
+        }
+
+        // Build a synthetic command string for execute_command
+        let command = `${action}`;
+        if (service === "gmail" && params) {
+          command = `${action} email to ${params.to || ""} subject ${params.subject || ""}`;
+        } else if (service === "docs" && params) {
+          command = `${action} document titled ${params.title || ""}`;
+        } else if (service === "calendar" && params) {
+          command = `${action} event ${params.title || params.summary || ""}`;
+        } else if (service === "tasks" && params) {
+          command = `${action} task ${params.title || ""}`;
+        }
+
+        const response = await fetch(`${API_BASE}/execute_command`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            service,
+            command,
+            user_token: userToken,
+            confirm: true, // Execute directly
+            suggested_params: params, // Pass pre-built params
+            page_title: tab?.title ?? "",
+            current_url: tab?.url ?? "",
+          }),
+        });
+        const data = await response.json();
+
+        // If successful and has open_url, open it in a new tab
+        if (data.success && data.open_url) {
+          console.log(`[cue] Opening URL from task execution: ${data.open_url}`);
+          chrome.tabs.create({ url: data.open_url });
+        }
+
+        // Mark task as completed if we have taskId
+        if (data.success && taskId) {
+          try {
+            await fetch(`${API_BASE}/suggested_tasks/${taskId}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ status: "completed" }),
+            });
+            // Decrement session task count to allow generating more
+            sessionTaskCount = Math.max(0, sessionTaskCount - 1);
+            console.log(`[cue] Task completed. Session count: ${sessionTaskCount}/${MAX_SESSION_TASKS}`);
+          } catch (e) {
+            console.error("[cue] Failed to mark task as completed:", e);
+          }
+        }
+
+        sendResponse(data);
+
+        if (tab?.id) {
+          chrome.tabs.sendMessage(tab.id, {
+            type: "TASK_EXECUTED",
+            payload: { ...data, taskId },
+          });
+        }
+      } catch (error: any) {
+        console.error("[cue] Execute suggested task error:", error);
+        sendResponse({ success: false, error: error.message });
       }
     })();
     return true;
@@ -825,4 +1485,138 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       .catch(() => sendResponse({ loggedIn: false }));
     return true;
   }
+
+  // User viewed/interacted with suggestions - start cooldown
+  if (message.type === "USER_VIEWED_SUGGESTIONS") {
+    onUserViewedSuggestions();
+    sendResponse({ success: true, state: suggestionState });
+    return true;
+  }
+
+  // Get URL trajectory for debugging/context
+  if (message.type === "GET_TRAJECTORY") {
+    sendResponse({
+      success: true,
+      trajectory: urlTrajectory.slice(),
+      keywords: extractTrajectoryKeywords(),
+      state: suggestionState,
+    });
+    return true;
+  }
+
+  // Get suggestion state machine status
+  if (message.type === "GET_SUGGESTION_STATE") {
+    const now = Date.now();
+    let cooldownRemaining = 0;
+    let lockoutRemaining = 0;
+
+    if (suggestionState === "cooldown") {
+      cooldownRemaining = Math.max(0, AUTO_SUGGEST_COOLDOWN_MS - (now - lastAutoSuggestTime));
+    } else if (suggestionState === "lockout") {
+      lockoutRemaining = Math.max(0, LOCKOUT_DURATION_MS - (now - lockoutStartTime));
+    }
+
+    sendResponse({
+      success: true,
+      state: suggestionState,
+      lastCategory: lastSuggestCategory,
+      lastKeywords: lastSuggestedTopicKeywords.slice(0, 5),
+      cooldownRemaining: Math.round(cooldownRemaining / 1000),
+      lockoutRemaining: Math.round(lockoutRemaining / 1000),
+    });
+    return true;
+  }
+});
+
+// ================== TASK SYNC WEBSOCKET ==================
+// Connect to backend WebSocket to sync tasks from AI Task Automation dashboard
+
+let taskSyncSocket: WebSocket | null = null;
+let taskSyncReconnectAttempts = 0;
+const MAX_TASK_SYNC_RECONNECTS = 5;
+
+function connectTaskSyncWebSocket() {
+  if (taskSyncSocket?.readyState === WebSocket.OPEN) return;
+
+  try {
+    taskSyncSocket = new WebSocket(`${WS_BASE}/ws/extension`);
+
+    taskSyncSocket.onopen = () => {
+      console.log("[cue] Task sync WebSocket connected");
+      taskSyncReconnectAttempts = 0;
+    };
+
+    taskSyncSocket.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+
+        // Handle incoming synced tasks from dashboard
+        if (data.type === "SYNCED_TASKS" || data.type === "SUGGESTED_TASKS_UPDATE") {
+          const tasks = data.tasks || [];
+          if (tasks.length > 0) {
+            console.log(`[cue] Received ${tasks.length} synced tasks from dashboard`);
+
+            // Store in chrome.storage
+            chrome.storage.local.set({ syncedTasks: tasks.slice(0, 50) });
+
+            // Send to active tab
+            chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
+              if (tab?.id && tab.url && !tab.url.startsWith("chrome://")) {
+                chrome.tabs.sendMessage(tab.id, {
+                  type: "PREDICTED_TASKS_POPUP",
+                  payload: { tasks: tasks.slice(0, MAX_SUGGESTIONS_PER_BATCH), trigger: "sync" },
+                }).catch(() => {});
+              }
+            });
+          }
+        }
+
+        // Handle activity updates
+        if (data.type === "ACTIVITY_UPDATE") {
+          console.log("[cue] Activity update from dashboard");
+          // Could trigger a refresh of suggestions if needed
+        }
+      } catch (e) {
+        console.error("[cue] Task sync message parse error:", e);
+      }
+    };
+
+    taskSyncSocket.onclose = (event) => {
+      taskSyncSocket = null;
+
+      // Only log if it was a clean close or first disconnect
+      if (event.wasClean) {
+        console.log("[cue] Task sync WebSocket closed cleanly");
+      } else if (taskSyncReconnectAttempts === 0) {
+        console.log("[cue] Task sync: Server not available (is Python server running?)");
+      }
+
+      // Reconnect with longer backoff when server is down
+      if (taskSyncReconnectAttempts < MAX_TASK_SYNC_RECONNECTS) {
+        taskSyncReconnectAttempts++;
+        const delay = Math.min(10000 * taskSyncReconnectAttempts, 60000); // Start at 10s, max 60s
+        if (taskSyncReconnectAttempts === 1) {
+          console.log(`[cue] Will retry connection in ${delay / 1000}s`);
+        }
+        setTimeout(connectTaskSyncWebSocket, delay);
+      } else {
+        console.log("[cue] Task sync disabled - start server and reload extension to reconnect");
+      }
+    };
+
+    taskSyncSocket.onerror = () => {
+      // WebSocket error events don't contain useful info - onclose handles logging
+    };
+  } catch (error) {
+    console.error("[cue] Failed to create task sync WebSocket:", error);
+  }
+}
+
+// Connect on startup
+connectTaskSyncWebSocket();
+
+// Reconnect when extension wakes up
+chrome.runtime.onStartup.addListener(() => {
+  console.log("[cue] Extension startup - connecting task sync");
+  connectTaskSyncWebSocket();
 });

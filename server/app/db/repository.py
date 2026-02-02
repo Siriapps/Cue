@@ -152,6 +152,8 @@ def get_session_by_id(session_id: str) -> Optional[Dict[str, Any]]:
         session = _collection("sessions").find_one({"_id": ObjectId(session_id)})
         if session:
             session["sessionId"] = str(session["_id"])
+            if "created_at" in session and hasattr(session["created_at"], "isoformat"):
+                session["created_at"] = session["created_at"].isoformat() + "Z"
         return session
     except Exception as e:
         print(f"Error fetching session: {e}")
@@ -274,3 +276,117 @@ def list_sessions_with_video(limit: int = 50) -> List[Dict[str, Any]]:
             session["_id"] = str(session["_id"])
 
     return sessions
+
+
+# ================== SUGGESTED TASKS FUNCTIONS ==================
+
+def save_suggested_task(task_data: Dict[str, Any]) -> str:
+    """
+    Save a suggested task to MongoDB.
+
+    Args:
+        task_data: Dictionary containing task information
+            - title: str
+            - description: str
+            - service: str or None (gmail, calendar, tasks, docs, drive, sheets, antigravity, gemini_chat)
+            - action: str or None
+            - params: dict or None
+            - status: str (pending, completed, dismissed)
+            - created_at: datetime
+
+    Returns:
+        The task ID as a string
+    """
+    task_data.setdefault("status", "pending")
+    task_data.setdefault("created_at", datetime.utcnow())
+    result = _collection("suggested_tasks").insert_one(task_data)
+    return str(result.inserted_id)
+
+
+def list_suggested_tasks(limit: int = 50, status: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    List suggested tasks, sorted by creation time (newest first).
+
+    Args:
+        limit: Maximum number of tasks to return
+        status: Filter by status (pending, in_progress, completed, dismissed) or None for all
+
+    Returns:
+        List of task documents
+    """
+    query = {}
+    if status:
+        query["status"] = status
+
+    tasks = list(_collection("suggested_tasks").find(query).sort("_id", -1).limit(limit))
+
+    for task in tasks:
+        if "_id" in task:
+            task["id"] = str(task["_id"])
+            task["_id"] = str(task["_id"])
+        if "created_at" in task and hasattr(task["created_at"], "isoformat"):
+            task["created_at"] = task["created_at"].isoformat() + "Z"
+
+    return tasks
+
+
+def get_suggested_task_by_id(task_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Get a single suggested task by its ID.
+
+    Args:
+        task_id: The task's ObjectId as a string
+
+    Returns:
+        Task document or None if not found
+    """
+    try:
+        task = _collection("suggested_tasks").find_one({"_id": ObjectId(task_id)})
+        if task:
+            task["id"] = str(task["_id"])
+            task["_id"] = str(task["_id"])
+        return task
+    except Exception as e:
+        print(f"Error fetching suggested task: {e}")
+        return None
+
+
+def update_suggested_task(task_id: str, updates: Dict[str, Any]) -> bool:
+    """
+    Update a suggested task document.
+
+    Args:
+        task_id: The task's ObjectId as a string
+        updates: Dictionary of fields to update (e.g., status)
+
+    Returns:
+        True if update was successful, False otherwise
+    """
+    try:
+        updates["updated_at"] = datetime.utcnow()
+        result = _collection("suggested_tasks").update_one(
+            {"_id": ObjectId(task_id)},
+            {"$set": updates}
+        )
+        return result.modified_count > 0
+    except Exception as e:
+        print(f"Error updating suggested task: {e}")
+        return False
+
+
+def delete_suggested_task(task_id: str) -> bool:
+    """
+    Delete a suggested task by ID.
+
+    Args:
+        task_id: The task's ObjectId as a string
+
+    Returns:
+        True if deletion was successful, False otherwise
+    """
+    try:
+        result = _collection("suggested_tasks").delete_one({"_id": ObjectId(task_id)})
+        return result.deleted_count > 0
+    except Exception as e:
+        print(f"Error deleting suggested task: {e}")
+        return False

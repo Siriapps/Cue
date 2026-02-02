@@ -25,6 +25,51 @@ def _log_activity(user_id: str, action: str, details: Dict[str, Any]) -> None:
     })
 
 
+def get_unread_count(user_token: str) -> int:
+    """Return the number of unread emails. Uses Gmail API resultSizeEstimate."""
+    try:
+        service = _gmail_service(user_token)
+        result = service.users().messages().list(
+            userId="me", q="is:unread", maxResults=1
+        ).execute()
+        return int(result.get("resultSizeEstimate", 0))
+    except HttpError:
+        return 0
+    except Exception:
+        return 0
+
+
+def get_recent_email_snippets(user_token: str, max_results: int = 20) -> List[Dict[str, Any]]:
+    """List recent emails from the last day; return list of {subject, snippet} for Gemini summarization."""
+    try:
+        service = _gmail_service(user_token)
+        result = service.users().messages().list(
+            userId="me", q="newer_than:1d", maxResults=max_results
+        ).execute()
+        messages = result.get("messages", [])
+        if not messages:
+            return []
+        out = []
+        for m in messages[:max_results]:
+            try:
+                msg = service.users().messages().get(
+                    userId="me", id=m["id"], format="metadata",
+                    metadataHeaders=["Subject", "From"]
+                ).execute()
+                payload = msg.get("payload", {})
+                headers = {h["name"]: h["value"] for h in payload.get("headers", [])}
+                subject = headers.get("Subject", "(No subject)")
+                snippet = msg.get("snippet", "")
+                out.append({"subject": subject, "snippet": snippet[:300]})
+            except Exception:
+                continue
+        return out
+    except HttpError:
+        return []
+    except Exception:
+        return []
+
+
 def list_emails(user_token: str, query: str = "", max_results: int = 10) -> str:
     """List/search emails. query: Gmail search string; max_results: max number to return."""
     user_id = ""

@@ -121,7 +121,7 @@ def generate_session_summary(
 {context}
 
 Transcript:
-{transcript[:15000]}  # Limit to ~15k chars to stay within context limits
+{transcript} 
 
 Analyze this transcript and generate a summary.
 """

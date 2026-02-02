@@ -21,7 +21,7 @@ try:
     from app.agents.motion import extract_motions, parse_motion_to_animation_hint
     from app.agents.puppeteer import generate_pose_for_motion, generate_pose_sequence, get_preset_pose
     from app.agents.transcriber import transcribe_audio, generate_session_summary
-    from app.agents.gemini_client import generate_video_from_summary
+    from app.agents.gemini_client import generate_session_image
 except ImportError as e:
     import traceback
     import json as _json
@@ -46,11 +46,33 @@ from app.db.repository import (
     get_session_by_id,
     list_google_activity,
     list_google_activity_recent,
+    save_suggested_task,
+    list_suggested_tasks,
+    get_suggested_task_by_id,
+    update_suggested_task,
+    delete_suggested_task,
 )
 
 # Load environment variables from root .env
 root_env_path = Path(__file__).resolve().parent.parent.parent / '.env'
 load_dotenv(root_env_path)
+
+# Helper to serialize MongoDB documents (convert ObjectId to string)
+def serialize_doc(doc: Any) -> Any:
+    """Recursively convert ObjectId and other non-serializable types to strings."""
+    from bson import ObjectId
+    if isinstance(doc, dict):
+        return {k: serialize_doc(v) for k, v in doc.items()}
+    elif isinstance(doc, list):
+        return [serialize_doc(item) for item in doc]
+    elif isinstance(doc, ObjectId):
+        return str(doc)
+    elif isinstance(doc, datetime):
+        s = doc.isoformat()
+        if s and "Z" not in s and "+" not in s:
+            s += "Z"
+        return s
+    return doc
 
 app = FastAPI(title="cue ADK API")
 
@@ -112,12 +134,25 @@ class DashboardConnectionManager:
         self.active_connections.discard(websocket)
         print(f"Dashboard client disconnected. Total: {len(self.active_connections)}")
     
+    @staticmethod
+    def _serialize_for_json(obj: Any) -> Any:
+        """Convert datetime (and similar) in dicts/lists to JSON-serializable form."""
+        if isinstance(obj, datetime):
+            return obj.isoformat() + "Z"
+        if hasattr(obj, "isoformat") and callable(getattr(obj, "isoformat", None)):
+            return obj.isoformat()
+        if isinstance(obj, dict):
+            return {k: DashboardConnectionManager._serialize_for_json(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [DashboardConnectionManager._serialize_for_json(v) for v in obj]
+        return obj
+
     async def broadcast(self, message: Dict[str, Any]):
         """Broadcast message to all connected dashboards."""
         if not self.active_connections:
             print(f"[cue] No active dashboard connections to broadcast: {message.get('type', 'unknown')}")
             return
-        
+        message = self._serialize_for_json(message)
         print(f"[cue] Broadcasting {message.get('type', 'unknown')} to {len(self.active_connections)} dashboard(s)")
         disconnected = set()
         for connection in self.active_connections:
@@ -201,6 +236,25 @@ class SessionStartNotify(BaseModel):
 
 class AuthGoogleRequest(BaseModel):
     access_token: str
+
+
+class SuggestTasksRequest(BaseModel):
+    context_blob: Optional[str] = None
+    page_title: Optional[str] = None
+    current_url: Optional[str] = None
+
+
+class UpdateTaskRequest(BaseModel):
+    status: Optional[str] = None  # pending, completed, dismissed
+
+
+class ExecuteSuggestedTaskRequest(BaseModel):
+    service: str
+    action: str
+    params: Dict[str, Any] = {}
+    user_token: str = ""
+    page_title: Optional[str] = None
+    current_url: Optional[str] = None
 
 
 # ================== BASE ENDPOINTS ==================
@@ -334,6 +388,236 @@ async def suggest_endpoint(payload: SuggestRequest) -> Dict[str, Any]:
     }
     result = ask_ai(query, context)
     return result
+
+
+@app.post("/suggest_tasks")
+async def suggest_tasks_endpoint(payload: SuggestTasksRequest) -> Dict[str, Any]:
+    """
+    Generate actionable task suggestions based on rich context.
+    Fetches sessions and Google activity to enrich the context.
+    Returns structured tasks that can be executed via MCP.
+    """
+    from app.agents.gemini_client import call_gemini
+    import json
+    import re
+
+    context_blob = (payload.context_blob or "").strip()
+    page_title = payload.page_title or ""
+    current_url = payload.current_url or ""
+
+    # Build rich context from multiple sources
+    context_sections = []
+
+    # Section 1: Recent searches and AI chats (from extension)
+    if context_blob:
+        context_sections.append(f"## Recent Searches and AI Chats\n{context_blob}")
+
+    # Section 2: Recorded Cue sessions
+    try:
+        sessions = list_sessions(limit=10)
+        if sessions:
+            session_lines = []
+            for s in sessions:
+                title = s.get("title", "Untitled")
+                url = s.get("source_url", "")
+                summary = s.get("summary", {})
+                tldr = summary.get("tldr", "") if isinstance(summary, dict) else ""
+                key_points = summary.get("key_points", []) if isinstance(summary, dict) else []
+                summary_text = tldr
+                if key_points:
+                    summary_text += " " + "; ".join(key_points[:3])
+                session_lines.append(f"- {title} ({url}): {summary_text[:200]}")
+            context_sections.append("## Recorded Cue Sessions\n" + "\n".join(session_lines))
+    except Exception as e:
+        print(f"[cue] Error fetching sessions for suggest_tasks: {e}")
+
+    # Section 3: Recent Google activity
+    try:
+        activities = list_google_activity_recent(limit=10)
+        if activities:
+            activity_lines = []
+            for a in activities[:10]:
+                svc = a.get("service", "")
+                act = a.get("action", "")
+                det = a.get("details", {}) or {}
+                if svc == "gmail" and act == "send_email":
+                    activity_lines.append(f"- sent email: {det.get('subject', 'email')}")
+                elif svc == "docs" and act == "create_document":
+                    activity_lines.append(f"- created doc: {det.get('title', 'doc')}")
+                elif svc == "calendar" and act == "create_event":
+                    activity_lines.append(f"- created event: {det.get('summary', 'event')}")
+                elif svc == "tasks" and act == "create_task":
+                    activity_lines.append(f"- created task: {det.get('title', 'task')}")
+                else:
+                    activity_lines.append(f"- {svc} {act}")
+            context_sections.append("## Recent Google Activity\n" + "\n".join(activity_lines))
+    except Exception as e:
+        print(f"[cue] Error fetching Google activity for suggest_tasks: {e}")
+
+    # Section 4: Current page
+    if page_title or current_url:
+        context_sections.append(f"## Current Page\nTitle: {page_title}\nURL: {current_url}")
+
+    full_context = "\n\n".join(context_sections)
+
+    if not full_context.strip():
+        return {"success": False, "error": "No context available to generate suggestions", "tasks": []}
+
+    # Build the prompt for Gemini
+    prompt = f"""You have the following context about the user's recent activity:
+
+{full_context}
+
+Based on this context, generate 1-5 concrete, actionable tasks that would be useful for the user.
+
+For each task that can be done via Google services (Gmail, Calendar, Tasks, Docs, Drive, Sheets) or Antigravity (IDE prompt pasting), include the service, action, and params so the system can execute them when the user accepts.
+
+Services and actions:
+- gmail: draft (to, subject, body), send (to, subject, body)
+- calendar: create (title/summary, description, date, time)
+- tasks: add (title, notes, due)
+- docs: create (title, content)
+- sheets: create (title)
+- gemini_chat: open (prompt - the full question/prompt to ask Gemini, context - any helpful context)
+- antigravity: search (prompt - the search/research prompt with full context)
+- openai_studio: open (prompt - the full question/prompt to ask ChatGPT)
+
+Be specific and use context (e.g., hackathon name, project ideas, email subjects) so created docs/emails/events are relevant.
+
+Return ONLY a JSON array of objects with these fields:
+- title: short task label (string)
+- description: one or two sentences (string)
+- service: one of gmail, calendar, tasks, docs, sheets, gemini_chat, antigravity, openai_studio, or null if informational only
+- action: the action name or null
+- params: object with fields needed for the action, or null
+
+Example:
+[
+  {{"title": "Draft hackathon submission email", "description": "Prepare email to submit your hackathon project", "service": "gmail", "action": "draft", "params": {{"to": "hackathon@example.com", "subject": "Hackathon Submission", "body": "Hi,\\n\\nPlease find attached our hackathon submission..."}}}},
+  {{"title": "Create project plan document", "description": "Document outlining the project roadmap", "service": "docs", "action": "create", "params": {{"title": "Project Plan", "content": "# Project Plan\\n\\n## Goals\\n..."}}}},
+  {{"title": "Ask Gemini about API integration", "description": "Get help with integrating the Gemini API", "service": "gemini_chat", "action": "open", "params": {{"prompt": "How do I integrate the Gemini API with my React application? I need to handle streaming responses and error handling.", "context": "Working on a hackathon project"}}}},
+  {{"title": "Research latest AI trends", "description": "Use Antigravity to research AI developments", "service": "antigravity", "action": "search", "params": {{"prompt": "What are the latest developments in multimodal AI models for 2024? Focus on practical applications."}}}}
+]
+
+Return ONLY the JSON array, no markdown or explanation."""
+
+    try:
+        gemini_result = call_gemini(
+            parts=[{"text": prompt}],
+            response_mime_type="application/json",
+        )
+
+        # Parse the response
+        tasks = []
+        if isinstance(gemini_result, dict) and "error" in gemini_result:
+            print(f"[cue] Gemini error in suggest_tasks: {gemini_result['error']}")
+            return {"success": False, "error": gemini_result["error"], "tasks": []}
+
+        raw_text = ""
+        if isinstance(gemini_result, dict):
+            tasks = gemini_result if isinstance(gemini_result, list) else [gemini_result]
+        elif isinstance(gemini_result, list):
+            tasks = gemini_result
+        else:
+            raw_text = getattr(gemini_result, "raw_text", None) or str(gemini_result)
+            # Try to extract JSON array
+            json_match = re.search(r'\[[\s\S]*\]', raw_text)
+            if json_match:
+                json_str = json_match.group()
+                try:
+                    tasks = json.loads(json_str)
+                except json.JSONDecodeError:
+                    # Try fixing common issues: single quotes -> double quotes
+                    # Replace single quotes that are used as JSON delimiters
+                    fixed_json = json_str.replace("'", '"')
+                    # Remove trailing commas before ] or }
+                    fixed_json = re.sub(r',\s*([}\]])', r'\1', fixed_json)
+                    try:
+                        tasks = json.loads(fixed_json)
+                    except json.JSONDecodeError:
+                        # Last resort: use ast.literal_eval for Python-style dicts
+                        import ast
+                        try:
+                            tasks = ast.literal_eval(json_str)
+                        except (ValueError, SyntaxError):
+                            # Give up, create fallback task
+                            tasks = [{"title": "Suggestion", "description": raw_text[:500], "service": None, "action": None, "params": None}]
+            else:
+                # Fallback: create single informational task
+                tasks = [{"title": "Suggestion", "description": raw_text[:500], "service": None, "action": None, "params": None}]
+
+        # Validate and save tasks to MongoDB
+        saved_tasks = []
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            task_data = {
+                "title": task.get("title", "Task"),
+                "description": task.get("description", ""),
+                "service": task.get("service"),
+                "action": task.get("action"),
+                "params": task.get("params"),
+                "status": "pending",
+                "source_context": {
+                    "page_title": page_title,
+                    "current_url": current_url,
+                },
+            }
+            task_id = save_suggested_task(task_data)
+            task_data["id"] = task_id
+            saved_tasks.append(task_data)
+
+        if saved_tasks:
+            await dashboard_manager.broadcast({"type": "SUGGESTED_TASKS_UPDATE"})
+            # Also broadcast to connected extensions
+            await extension_manager.send_tasks(serialize_doc(saved_tasks[:5]))
+        return {"success": True, "tasks": serialize_doc(saved_tasks)}
+
+    except Exception as e:
+        print(f"[cue] Error in suggest_tasks: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e), "tasks": []}
+
+
+@app.get("/suggested_tasks")
+async def get_suggested_tasks(limit: int = 50, status: Optional[str] = None) -> Dict[str, Any]:
+    """Get list of suggested tasks. Optional status filter: pending, in_progress, completed, dismissed."""
+    tasks = list_suggested_tasks(limit=limit, status=status)
+    return {"success": True, "tasks": tasks}
+
+
+@app.patch("/suggested_tasks/{task_id}")
+async def update_task_endpoint(task_id: str, payload: UpdateTaskRequest) -> Dict[str, Any]:
+    """Update a suggested task (e.g., mark as completed or dismissed)."""
+    updates = {}
+    if payload.status:
+        if payload.status not in ["pending", "in_progress", "completed", "dismissed"]:
+            return {"success": False, "error": "Invalid status. Must be: pending, in_progress, completed, or dismissed"}
+        updates["status"] = payload.status
+
+    if not updates:
+        return {"success": False, "error": "No updates provided"}
+
+    success = update_suggested_task(task_id, updates)
+    if success:
+        # Broadcast updated task list to dashboard for real-time sync
+        updated_tasks = list_suggested_tasks(limit=50)
+        await dashboard_manager.broadcast({
+            "type": "TASKS_UPDATED",
+            "tasks": updated_tasks
+        })
+        return {"success": True, "message": f"Task {task_id} updated"}
+    return {"success": False, "error": "Task not found or update failed"}
+
+
+@app.delete("/suggested_tasks/{task_id}")
+async def delete_task_endpoint(task_id: str) -> Dict[str, Any]:
+    """Delete a suggested task."""
+    success = delete_suggested_task(task_id)
+    if success:
+        return {"success": True, "message": f"Task {task_id} deleted"}
+    return {"success": False, "error": "Task not found or delete failed"}
 
 
 @app.post("/pose")
@@ -478,48 +762,31 @@ async def save_session_endpoint(payload: SessionSaveRequest) -> Dict[str, Any]:
             "step": "summarizing",
         })
 
-        # Step 3: Generate video summary (70-95%)
+        # No Veo video generation; only thumbnail image
         video_url = None
-        
-        # Check if video already exists in MongoDB (by checking if a session with same title/source has video)
-        # Note: For new sessions, this won't match, but for retries it might
-        existing_video_url = None
+
+        # Step 3b: Generate session thumbnail image (alongside summary; once per session)
+        thumbnail_base64 = None
+        thumbnail_mime_type = "image/png"
         try:
-            # Try to find existing session with same title and source_url that has a video
-            existing_sessions = list_sessions(limit=100)
-            for existing_session in existing_sessions:
-                if (existing_session.get("title") == payload.title and 
-                    existing_session.get("source_url") == payload.source_url and
-                    existing_session.get("video_url")):
-                    existing_video_url = existing_session.get("video_url")
-                    print(f"[cue] Found existing video for session '{payload.title}': {existing_video_url[:80]}...")
-                    break
-        except Exception as check_error:
-            print(f"[cue] Error checking for existing video (non-fatal): {check_error}")
-        
-        if existing_video_url:
-            video_url = existing_video_url
-            print(f"[cue] Using existing video URL, skipping generation")
-        else:
-            try:
-                await dashboard_manager.broadcast({
-                    "type": "SESSION_PROGRESS",
-                    "sessionId": session_id,
-                    "progress": 75,
-                    "step": "generating_video",
-                })
-
-                print(f"[cue] Generating video for session: {payload.title}")
-                video_url = await generate_video_from_summary(summary)
-
-                if video_url:
-                    print(f"[cue] Video generated: {video_url}")
-                else:
-                    print(f"[cue] No video URL returned (video generation may have failed)")
-
-            except Exception as video_error:
-                print(f"[cue] Video generation failed (non-fatal): {video_error}")
-                # Continue without video - not a fatal error
+            await dashboard_manager.broadcast({
+                "type": "SESSION_PROGRESS",
+                "sessionId": session_id,
+                "progress": 75,
+                "step": "generating_thumbnail",
+            })
+            title = (payload.title or "Session").strip().replace("\n", " ")[:200]
+            tldr = (summary.get("tldr") or "AI-inferred summary").strip().replace("\n", " ")[:400]
+            prompt = f"A calm, professional illustration representing a session: {title}. {tldr}."
+            thumb_result = generate_session_image(prompt)
+            if "error" not in thumb_result:
+                thumbnail_base64 = thumb_result.get("image_base64")
+                thumbnail_mime_type = thumb_result.get("mime_type", "image/png")
+                print(f"[cue] Session thumbnail generated for: {payload.title}")
+            else:
+                print(f"[cue] Session thumbnail skipped (non-fatal): {thumb_result.get('error', '')[:80]}")
+        except Exception as thumb_err:
+            print(f"[cue] Session thumbnail failed (non-fatal): {thumb_err}")
 
         # Step 4: Saving to MongoDB (98%)
         await dashboard_manager.broadcast({
@@ -529,7 +796,7 @@ async def save_session_endpoint(payload: SessionSaveRequest) -> Dict[str, Any]:
             "step": "saving_to_db",
         })
 
-        # Prepare session data (include embedding for vector search)
+        # Prepare session data (include embedding and thumbnail for vector search / cards)
         summary_text = (summary.get("tldr") or "") + " " + " ".join(summary.get("key_points") or [])
         session_data = {
             "title": payload.title,
@@ -542,6 +809,9 @@ async def save_session_endpoint(payload: SessionSaveRequest) -> Dict[str, Any]:
             "created_at": datetime.utcnow(),
             "summary_embedding": generate_embedding(summary_text),
         }
+        if thumbnail_base64:
+            session_data["thumbnail_base64"] = thumbnail_base64
+            session_data["thumbnail_mime_type"] = thumbnail_mime_type
 
         # Broadcast the full session result to dashboard FIRST (immediate display)
         # Use temp UUID for immediate display, will be updated after MongoDB save
@@ -557,6 +827,9 @@ async def save_session_endpoint(payload: SessionSaveRequest) -> Dict[str, Any]:
             "has_video": video_url is not None,
             "created_at": datetime.utcnow().isoformat(),
         }
+        if thumbnail_base64:
+            broadcast_data["thumbnail_base64"] = thumbnail_base64
+            broadcast_data["thumbnail_mime_type"] = thumbnail_mime_type
         
         print(f"[cue] Broadcasting SESSION_RESULT: sessionId={session_id}, title={payload.title}, has_summary={bool(summary)}, has_transcript={bool(transcript)}, has_video={video_url is not None}")
         print(f"[cue] Active WebSocket connections: {len(dashboard_manager.active_connections)}")
@@ -609,9 +882,6 @@ async def save_session_endpoint(payload: SessionSaveRequest) -> Dict[str, Any]:
             "sessionId": session_id,
             "error": str(e),
         })
-        
-        # Always return JSON, even on error
-        from fastapi.responses import JSONResponse  # type: ignore[import-untyped]
         return JSONResponse(
             status_code=500,
             content={
@@ -637,6 +907,20 @@ async def get_session(session_id: str) -> Dict[str, Any]:
     if session:
         return {"session": session}
     return {"error": "Session not found"}
+
+
+@app.get("/sessions/{session_id}/image")
+async def get_session_image(session_id: str):
+    """Return session thumbnail only if it was generated at save time (no on-demand generation)."""
+    session = get_session_by_id(session_id)
+    if not session:
+        return JSONResponse(status_code=404, content={"error": "Session not found"})
+    if not session.get("thumbnail_base64"):
+        return JSONResponse(status_code=404, content={"error": "No thumbnail for this session"})
+    return {
+        "image_base64": session["thumbnail_base64"],
+        "mime_type": session.get("thumbnail_mime_type", "image/png"),
+    }
 
 
 @app.delete("/sessions/{session_id}")
@@ -712,6 +996,96 @@ async def get_google_activity(user_id: str = "", limit: int = 100) -> Dict[str, 
     else:
         activities = list_google_activity_recent(limit=limit)
     return {"activities": activities}
+
+
+# ================== MOSAIC COMMS (Gmail unread, Gemini summary, Calendar upcoming) ==================
+
+_mosaic_comms_cache: Dict[str, tuple] = {}  # cache_key -> (gmail_summary, expiry_timestamp)
+MOSAIC_CACHE_TTL_SECONDS = 600  # 10 minutes
+
+
+class MosaicCommsRequest(BaseModel):
+    """Request for Mosaic comms hub: Gmail + Calendar data."""
+    user_token: str = ""
+
+
+def _mosaic_cache_key(token: str) -> str:
+    """Stable key for caching (do not store full token)."""
+    import hashlib
+    return hashlib.sha256(token.encode()).hexdigest()[:24]
+
+
+@app.post("/mosaic/comms")
+async def mosaic_comms(payload: MosaicCommsRequest) -> Dict[str, Any]:
+    """
+    Return data for the Mosaic comms hub: Gmail unread count, Gemini summary of today's emails,
+    and upcoming calendar events. Requires user_token (Google OAuth from dashboard).
+    """
+    from app.mcp import gmail_server, calendar_server
+    from app.agents.gemini_client import call_gemini
+
+    user_token = (payload.user_token or "").strip()
+    if not user_token:
+        return {
+            "gmail_unread_count": 0,
+            "gmail_summary": None,
+            "calendar_upcoming": [],
+            "error": "user_token required",
+        }
+
+    gmail_unread_count = 0
+    gmail_summary: Optional[str] = None
+    calendar_upcoming: List[Dict[str, Any]] = []
+
+    try:
+        gmail_unread_count = gmail_server.get_unread_count(user_token)
+    except Exception:
+        pass
+
+    try:
+        calendar_upcoming = calendar_server.list_upcoming_events(user_token, max_results=10)
+    except Exception:
+        pass
+
+    cache_key = _mosaic_cache_key(user_token)
+    now_ts = datetime.utcnow().timestamp()
+    if cache_key in _mosaic_comms_cache:
+        cached_summary, expiry = _mosaic_comms_cache[cache_key]
+        if now_ts < expiry:
+            gmail_summary = cached_summary
+
+    if gmail_summary is None:
+        try:
+            snippets = gmail_server.get_recent_email_snippets(user_token, max_results=15)
+            if snippets:
+                blob = "\n\n".join(
+                    f"Subject: {s.get('subject', '')}\nSnippet: {s.get('snippet', '')}"
+                    for s in snippets
+                )
+                prompt = (
+                    "Given these recent email subjects and snippets from the last day, "
+                    "list the important things the user should note (bullets, concise, 3-6 points). "
+                    "If nothing stands out, say 'Nothing urgent.'\n\n" + blob[:8000]
+                )
+                result = call_gemini(
+                    parts=[{"text": prompt}],
+                    response_mime_type="text/plain",
+                )
+                text = result.get("raw_text") or result.get("error") or ""
+                if text and "error" not in text.lower():
+                    gmail_summary = text.strip()
+                    _mosaic_comms_cache[cache_key] = (gmail_summary, now_ts + MOSAIC_CACHE_TTL_SECONDS)
+            else:
+                gmail_summary = "No recent emails to summarize."
+        except Exception as e:
+            gmail_summary = None
+            print(f"[cue] mosaic/comms Gemini summary error: {e}")
+
+    return {
+        "gmail_unread_count": gmail_unread_count,
+        "gmail_summary": gmail_summary,
+        "calendar_upcoming": calendar_upcoming,
+    }
 
 
 # ================== COMMAND EXECUTION (@mention) ==================
@@ -831,6 +1205,20 @@ Return ONLY the JSON object, no markdown or explanation."""
             "hint": "Try being more specific, e.g., '@gmail draft email to user@example.com subject Hello'"
         }
 
+    # Normalize action aliases - map common variations to expected actions
+    ACTION_ALIASES = {
+        "gmail": {"generate": "draft", "create": "draft", "compose": "draft", "write": "draft", "make": "draft"},
+        "calendar": {"schedule": "create", "add": "create", "book": "create", "make": "create"},
+        "tasks": {"create": "add", "new": "add", "make": "add"},
+        "docs": {"generate": "create", "new": "create", "write": "create", "make": "create"},
+        "sheets": {"generate": "create", "new": "create", "make": "create"},
+        "drive": {"generate": "create", "new": "create", "make": "create"},
+    }
+    if service in ACTION_ALIASES and action in ACTION_ALIASES[service]:
+        original_action = action
+        action = ACTION_ALIASES[service][action]
+        print(f"[cue] Normalized action: {original_action} -> {action} for {service}")
+
     # Ensure required fields have fallbacks for preview/execute
     if service == "gmail" and action == "draft":
         params.setdefault("to", "")
@@ -898,13 +1286,41 @@ Return ONLY the JSON object, no markdown or explanation."""
     print(f"[cue] execute_command: Executing {service}/{action} with token (length={len(user_token)})")
     result = {"success": False, "error": "Action not implemented"}
 
-    # Helper to check if MCP result is an error (MCP servers return "Error: ..." strings on failure)
+    # Helper to check if MCP result is an error and extract open_url if available
     def wrap_mcp_result(mcp_result: str, success_message: str, result_key: str = "result") -> Dict[str, Any]:
-        if isinstance(mcp_result, str) and mcp_result.startswith("Error:"):
-            error_msg = mcp_result[6:].strip()  # Remove "Error:" prefix
-            print(f"[cue] MCP error: {error_msg}")
-            return {"success": False, "error": error_msg}
-        return {"success": True, "message": success_message, result_key: mcp_result}
+        import ast
+        result_str = str(mcp_result) if mcp_result else ""
+        print(f"[cue] MCP result: {result_str[:500]}")  # Log MCP result
+
+        # Check for various error patterns
+        error_patterns = ["Error:", "error:", "failed", "Failed", "Invalid", "invalid"]
+        for pattern in error_patterns:
+            if result_str.startswith(pattern):
+                error_msg = result_str.replace(pattern, "", 1).strip()
+                print(f"[cue] MCP error detected: {error_msg}")
+                return {"success": False, "error": error_msg or result_str}
+
+        # Check for HTTP error codes in the result
+        if "401" in result_str or "403" in result_str or "404" in result_str or "500" in result_str:
+            print(f"[cue] MCP HTTP error: {result_str}")
+            return {"success": False, "error": result_str}
+
+        # Try to parse dict-like strings to extract open_url
+        open_url = None
+        parsed_result = mcp_result
+        if isinstance(mcp_result, str) and mcp_result.startswith("{"):
+            try:
+                parsed_result = ast.literal_eval(mcp_result)
+                # Extract open_url from various keys used by MCP servers
+                open_url = parsed_result.get("webViewLink") or parsed_result.get("htmlLink") or parsed_result.get("spreadsheetUrl")
+            except Exception:
+                pass
+
+        response = {"success": True, "message": success_message, result_key: parsed_result}
+        if open_url:
+            response["open_url"] = open_url
+        print(f"[cue] MCP success: {success_message}")
+        return response
 
     try:
         if service == "gmail":
@@ -1185,3 +1601,90 @@ async def websocket_puppeteer(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         print(f"Puppeteer WebSocket disconnected after {chunk_count} chunks")
         return
+
+
+# ================== EXTENSION CONNECTION MANAGER ==================
+
+class ExtensionConnectionManager:
+    """Manages WebSocket connections for Chrome extension task syncing."""
+
+    def __init__(self):
+        self.active_connections: Set[WebSocket] = set()
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.add(websocket)
+        print(f"[cue] Extension client connected. Total: {len(self.active_connections)}")
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.discard(websocket)
+        print(f"[cue] Extension client disconnected. Total: {len(self.active_connections)}")
+
+    async def broadcast(self, message: dict) -> None:
+        """Broadcast a message to all connected extensions."""
+        disconnected = []
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except Exception:
+                disconnected.append(connection)
+        for conn in disconnected:
+            self.active_connections.discard(conn)
+
+    async def send_tasks(self, tasks: list) -> None:
+        """Send synced tasks to all connected extensions."""
+        await self.broadcast({
+            "type": "SYNCED_TASKS",
+            "tasks": tasks,
+            "timestamp": asyncio.get_event_loop().time(),
+        })
+
+extension_manager = ExtensionConnectionManager()
+
+
+@app.websocket("/ws/extension")
+async def websocket_extension(websocket: WebSocket) -> None:
+    """
+    WebSocket endpoint for Chrome extension task synchronization.
+
+    Broadcasts:
+    - SYNCED_TASKS: Tasks from dashboard to sync with extension
+    - SUGGESTED_TASKS_UPDATE: New suggested tasks available
+    - ACTIVITY_UPDATE: Activity changes notification
+    """
+    await extension_manager.connect(websocket)
+
+    try:
+        # Send current suggested tasks on connect
+        try:
+            tasks = list_suggested_tasks(limit=50)
+            pending_tasks = [t for t in tasks if t.get("status") != "completed"][:5]
+            if pending_tasks:
+                await websocket.send_json({
+                    "type": "SYNCED_TASKS",
+                    "tasks": pending_tasks,
+                })
+        except Exception as e:
+            print(f"[cue] Failed to send initial tasks: {e}")
+
+        # Keep connection alive and handle messages
+        while True:
+            message = await websocket.receive_json()
+
+            if message.get("type") == "ping":
+                await websocket.send_json({"type": "pong", "timestamp": message.get("timestamp")})
+
+            elif message.get("type") == "REQUEST_TASKS":
+                # Extension requests current tasks
+                try:
+                    tasks = list_suggested_tasks(limit=50)
+                    pending_tasks = [t for t in tasks if t.get("status") != "completed"][:5]
+                    await websocket.send_json({
+                        "type": "SYNCED_TASKS",
+                        "tasks": pending_tasks,
+                    })
+                except Exception as e:
+                    await websocket.send_json({"type": "error", "error": str(e)})
+
+    except WebSocketDisconnect:
+        extension_manager.disconnect(websocket)

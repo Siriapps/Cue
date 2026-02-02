@@ -49,38 +49,32 @@ function ensureRoot(): HTMLElement {
   return container;
 }
 
+// Initialize all UI components
+function initializeUI() {
+  try {
+    // Render HaloStrip and LiveCompanion in Shadow DOM
+    const container = ensureRoot();
+    const root = createRoot(container);
+    root.render(
+      <>
+        <HaloStrip />
+        <LiveCompanion />
+      </>
+    );
+
+    initChatCapture();
+    console.log("[cue] UI initialized - notifications in halo strip");
+  } catch (error) {
+    console.error("[cue] Failed to initialize UI:", error);
+  }
+}
+
 // Wait for DOM to be ready before initializing
 function init() {
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", () => {
-      try {
-        const container = ensureRoot();
-        const root = createRoot(container);
-        root.render(
-          <>
-            <HaloStrip />
-            <LiveCompanion />
-          </>
-        );
-        initChatCapture();
-      } catch (error) {
-        console.error("[cue] Failed to initialize Halo Strip:", error);
-      }
-    });
+    document.addEventListener("DOMContentLoaded", initializeUI);
   } else {
-    try {
-      const container = ensureRoot();
-      const root = createRoot(container);
-      root.render(
-        <>
-          <HaloStrip />
-          <LiveCompanion />
-        </>
-      );
-      initChatCapture();
-    } catch (error) {
-      console.error("[cue] Failed to initialize Halo Strip:", error);
-    }
+    initializeUI();
   }
 }
 

@@ -1,12 +1,12 @@
 import React, { useState } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { clearAuth } from '../auth/googleAuth';
-import DashboardHalo from '../components/DashboardHalo';
 
 function DashboardLayout({ user, children, searchQuery, setSearchQuery, dashboardConnected }) {
   const navigate = useNavigate();
   const location = useLocation();
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [sidebarExpanded, setSidebarExpanded] = useState(false);
 
   const handleLogout = () => {
     clearAuth();
@@ -20,17 +20,13 @@ function DashboardLayout({ user, children, searchQuery, setSearchQuery, dashboar
   const getPageTitle = () => {
     switch (location.pathname) {
       case '/library':
-        return 'Session Library';
+        return 'Meeting Session History';
       case '/activity':
-        return 'Google Activity';
+        return 'AI Task Automation';
       case '/mosaic':
         return 'Mosaic Field';
-      case '/orbit':
-        return 'Daily Orbit';
       case '/settings':
         return 'Settings';
-      case '/avatar':
-        return 'Avatar Preview';
       case '/reels':
         return 'Reels Feed';
       default:
@@ -38,8 +34,21 @@ function DashboardLayout({ user, children, searchQuery, setSearchQuery, dashboar
     }
   };
 
+  const getPageSubtitle = () => {
+    switch (location.pathname) {
+      case '/library':
+        return 'Manage and review your AI-enhanced workspaces.';
+      case '/activity':
+        return 'Observing agentic workflows in real-time.';
+      default:
+        return '';
+    }
+  };
+
+  const isMosaicPage = location.pathname === '/mosaic';
+
   return (
-    <div className="library-app">
+    <div className={`library-app${sidebarExpanded ? ' sidebar-expanded' : ''}${isMosaicPage ? ' mosaic-fullscreen' : ''}`}>
       {/* Sidebar */}
       <div className="library-sidebar">
         <div className="sidebar-brand">
@@ -59,6 +68,22 @@ function DashboardLayout({ user, children, searchQuery, setSearchQuery, dashboar
           <span className="sidebar-brand-text">cue</span>
         </div>
 
+        <button
+          type="button"
+          className="sidebar-toggle-btn"
+          onClick={() => setSidebarExpanded((e) => !e)}
+          title={sidebarExpanded ? 'Collapse sidebar' : 'Expand sidebar'}
+          aria-label={sidebarExpanded ? 'Collapse sidebar' : 'Expand sidebar'}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            {sidebarExpanded ? (
+              <polyline points="15 18 9 12 15 6" />
+            ) : (
+              <polyline points="9 18 15 12 9 6" />
+            )}
+          </svg>
+        </button>
+
         <div className="sidebar-nav">
           <NavLink
             to="/library"
@@ -74,17 +99,6 @@ function DashboardLayout({ user, children, searchQuery, setSearchQuery, dashboar
             <span>Library</span>
           </NavLink>
           <NavLink
-            to="/avatar"
-            className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-            title="Avatar Preview"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <circle cx="12" cy="7" r="4"/>
-              <path d="M5 21v-2a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4v2"/>
-            </svg>
-            <span>Avatar</span>
-          </NavLink>
-          <NavLink
             to="/reels"
             className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
             title="Reels"
@@ -98,13 +112,13 @@ function DashboardLayout({ user, children, searchQuery, setSearchQuery, dashboar
           <NavLink
             to="/activity"
             className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-            title="AI Actions"
+            title="AI Task Automation"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
-              <polyline points="22,6 12,13 2,6"/>
+              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+              <polyline points="22 4 12 14.01 9 11.01"/>
             </svg>
-            <span>AI Actions</span>
+            <span>AI Task Automation</span>
           </NavLink>
           <NavLink
             to="/mosaic"
@@ -120,17 +134,6 @@ function DashboardLayout({ user, children, searchQuery, setSearchQuery, dashboar
             <span>Mosaic</span>
           </NavLink>
           <NavLink
-            to="/orbit"
-            className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-            title="Orbit"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
-              <circle cx="12" cy="12" r="4"/>
-            </svg>
-            <span>Orbit</span>
-          </NavLink>
-          <NavLink
             to="/settings"
             className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
             title="Settings"
@@ -143,26 +146,25 @@ function DashboardLayout({ user, children, searchQuery, setSearchQuery, dashboar
           </NavLink>
         </div>
 
-        <button className="nav-item record-btn" onClick={handleRecordNew} title="Record New Session">
-          <svg viewBox="0 0 24 24" fill="currentColor">
-            <circle cx="12" cy="12" r="10"/>
-            <circle cx="12" cy="12" r="6" fill="white"/>
-          </svg>
-          <span>New Session</span>
-        </button>
-
-        {/* User Profile Section */}
+        {/* User section: avatar + menu (stitch reference) */}
         {user && (
           <div className="sidebar-user">
             <div
               className="user-profile-btn"
               onClick={() => setShowUserMenu(!showUserMenu)}
+              title={user.name || user.email}
             >
-              <img
-                src={user.picture || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name || 'User')}&background=8b5cf6&color=fff`}
-                alt={user.name}
-                className="user-avatar"
-              />
+              {user.picture ? (
+                <img
+                  src={user.picture}
+                  alt=""
+                  className="sidebar-user-avatar"
+                />
+              ) : (
+                <div className="sidebar-user-avatar placeholder">
+                  {(user.name || 'U').charAt(0).toUpperCase()}
+                </div>
+              )}
               <div className="user-info">
                 <span className="user-name">{user.name || 'User'}</span>
                 <span className="user-email">{user.email || ''}</span>
@@ -188,32 +190,69 @@ function DashboardLayout({ user, children, searchQuery, setSearchQuery, dashboar
         )}
       </div>
 
-      {/* Main Content */}
-      <div className="library-main">
-        <DashboardHalo user={user} />
-        {/* Header */}
-        <header className="library-header">
-          <h1 className="library-title">{getPageTitle()}</h1>
-          <div className="header-actions">
-            <div className="search-box">
+      {/* Main Content - stitch liquid bg */}
+      <div className={`library-main liquid-bg${isMosaicPage ? ' mosaic-main' : ''}`}>
+        {/* Top bar: Cue AI logo, search, Halo Strip, Start Session, Go Live (hidden on Mosaic) */}
+        {!isMosaicPage && (
+          <div className="dashboard-topbar">
+            <div className="topbar-brand">
+              <div className="topbar-logo">
+                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <circle cx="12" cy="12" r="10" fill="url(#logoGradTopbar)" />
+                  <path d="M8 12C8 9.79 9.79 8 12 8C14.21 8 16 9.79 16 12" stroke="white" strokeWidth="2" strokeLinecap="round"/>
+                  <circle cx="12" cy="14" r="2" fill="white"/>
+                  <defs>
+                    <linearGradient id="logoGradTopbar" x1="2" y1="2" x2="22" y2="22">
+                      <stop stopColor="#6366f1"/>
+                      <stop offset="1" stopColor="#8b5cf6"/>
+                    </linearGradient>
+                  </defs>
+                </svg>
+              </div>
+              <span className="topbar-brand-text">Cue AI</span>
+            </div>
+            <div className="topbar-search">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <circle cx="11" cy="11" r="8"/>
                 <path d="m21 21-4.35-4.35"/>
               </svg>
               <input
                 type="text"
-                placeholder="Search sessions..."
+                placeholder={location.pathname === '/activity' ? 'Search tasks, meetings, or files…' : 'Search sessions…'}
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
               />
             </div>
-            {dashboardConnected && (
-              <div className="connection-indicator connected" title="Connected to server">
-                <span className="connection-dot"></span>
-              </div>
-            )}
+            <div className="topbar-actions">
+              <button type="button" className="topbar-btn halo-strip" title="Halo Strip (use extension on page)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M23 7l-7 5 7 5V7z"/>
+                  <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+                </svg>
+                <span>Halo Strip</span>
+              </button>
+              <button type="button" className="topbar-btn start-session" onClick={handleRecordNew}>
+                <span>Start Session</span>
+              </button>
+              <button type="button" className="topbar-btn go-live" title="Go Live">
+                <span className="live-dot"></span>
+                <span>Go Live</span>
+              </button>
+              {dashboardConnected && (
+                <div className="connection-indicator connected" title="Connected to server">
+                  <span className="connection-dot"></span>
+                </div>
+              )}
+            </div>
           </div>
-        </header>
+        )}
+
+        {/* Page title row (hidden on Mosaic) */}
+        {!isMosaicPage && (
+          <header className="library-header">
+            <h1 className="library-title">{getPageTitle()}</h1>
+          </header>
+        )}
 
         {/* Page Content */}
         {children}
