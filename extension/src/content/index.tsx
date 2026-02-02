@@ -79,6 +79,12 @@ function init() {
     return;
   }
 
+  // Log Google domain detection for debugging
+  const hostname = window.location.hostname;
+  if (hostname.includes('google.com') || hostname.includes('youtube.com')) {
+    console.log("[cue] Detected Google domain:", hostname, "- Initializing Cue");
+  }
+
   const initialize = () => {
     try {
       console.log("[cue] Initializing Halo Strip on:", window.location.href);

@@ -231,10 +231,22 @@ async function startWakeWordDetection() {
     throw new Error('Speech Recognition not available');
   }
 
-  // Don't request getUserMedia - let SpeechRecognition handle microphone access directly
-  // SpeechRecognition API manages its own microphone access and doesn't need getUserMedia
-  // Requesting getUserMedia first can cause conflicts and "not-allowed" errors
-  console.log('[cue offscreen] Skipping getUserMedia - SpeechRecognition will handle mic access');
+  // Request microphone permission first to ensure it's granted
+  // This helps avoid "not-allowed" errors
+  console.log('[cue offscreen] Requesting microphone permission...');
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    console.log('[cue offscreen] ✅ Microphone permission granted');
+    // Keep the stream open while recognition is active
+    // Don't stop it - let SpeechRecognition use it
+    micStream.getAudioTracks().forEach(track => {
+      track.enabled = true;
+      console.log('[cue offscreen] Mic track enabled:', track.kind, 'label:', track.label);
+    });
+  } catch (e) {
+    console.error('[cue offscreen] ❌ Failed to get microphone permission:', e.message);
+    throw new Error('Microphone permission denied: ' + e.message);
+  }
 
   recognition = new SpeechRecognition();
   recognition.continuous = true;
@@ -245,6 +257,7 @@ async function startWakeWordDetection() {
   // Add event handlers for debugging
   recognition.onstart = () => {
     console.log('[cue offscreen] ✅ Recognition.onstart fired - microphone should be active now');
+    console.log('[cue offscreen] 🎤 Wake word detection is now ACTIVE - say "Hey Cue"');
   };
 
   recognition.onaudiostart = () => {
@@ -291,16 +304,19 @@ async function startWakeWordDetection() {
       const hasCombined = transcript.includes('heycue') || transcript.includes('heyq') || transcript.includes('hey queue');
       
       if ((hasHey && hasCue) || hasCombined) {
-        console.log('[cue] 🎤 Wake up call detected! Transcript:', transcript);
+        console.log('[cue offscreen] 🎤🎤🎤 WAKE UP CALL DETECTED! Transcript:', transcript);
+        console.log('[cue offscreen] Sending WAKE_WORD_DETECTED message to background...');
         wakeWordDetected = true;
 
         // Notify background -> content script
         chrome.runtime.sendMessage({
           type: 'WAKE_WORD_DETECTED',
           target: 'background'
+        }).then(() => {
+          console.log('[cue offscreen] ✅ WAKE_WORD_DETECTED message sent successfully');
         }).catch(err => {
           // Ignore errors if background script is unavailable
-          console.warn('[cue offscreen] Failed to send wake word message:', err);
+          console.error('[cue offscreen] ❌ Failed to send wake word message:', err);
         });
 
         // Stop to prevent multiple triggers
