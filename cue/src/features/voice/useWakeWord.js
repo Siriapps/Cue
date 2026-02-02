@@ -2,59 +2,26 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { checkMicrophonePermission, requestMicrophoneAccess, resumeAudioContext, createAudioContext } from './voiceUtils';
 
 /**
- * Hook for wake word detection using Porcupine (with fallback to Web Speech API keyword spotting)
+ * Hook for wake word detection using Web Speech API keyword spotting
  */
 export function useWakeWord(options = {}) {
   const {
     wakePhrase = 'Hey Cue',
     onWakeWordDetected,
     enabled = false,
-    porcupineAccessKey = null, // User must provide from Picovoice Console
   } = options;
 
   const [isListening, setIsListening] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
   const [error, setError] = useState(null);
-  const [usePorcupine, setUsePorcupine] = useState(false);
   
-  const porcupineRef = useRef(null);
-  const audioContextRef = useRef(null);
   const fallbackRecognitionRef = useRef(null);
-  const workerRef = useRef(null);
   const enabledRef = useRef(enabled);
   
   // Keep enabled ref in sync
   useEffect(() => {
     enabledRef.current = enabled;
   }, [enabled]);
-
-  // Initialize Porcupine
-  const initializePorcupine = useCallback(async () => {
-    if (!porcupineAccessKey) {
-      console.warn('[voice] Porcupine AccessKey not provided, using fallback');
-      return false;
-    }
-
-    try {
-      // Dynamic import to avoid bundle size if not used
-      const { Porcupine } = await import('@picovoice/porcupine-web');
-      const { WebVoiceProcessor } = await import('@picovoice/web-voice-processor');
-
-      // Create custom keyword for "Hey Cue"
-      // Note: Porcupine requires a keyword model file. For "Hey Cue", we'll use a built-in
-      // or create a custom one. For now, we'll use a fallback approach.
-      
-      // Check if we can use Porcupine's built-in keywords or need custom model
-      // Since "Hey Cue" is not a built-in, we'll use fallback for now
-      // In production, you'd need to generate a custom keyword model via Picovoice Console
-      
-      console.log('[voice] Porcupine initialization skipped - custom keyword model required');
-      return false;
-    } catch (error) {
-      console.warn('[voice] Porcupine initialization failed:', error);
-      return false;
-    }
-  }, [porcupineAccessKey]);
 
   // Fallback: Use Web Speech API with keyword grammar
   const initializeFallback = useCallback(() => {
@@ -120,19 +87,9 @@ export function useWakeWord(options = {}) {
           return;
         }
 
-        // Try Porcupine first
-        const porcupineSuccess = await initializePorcupine();
-        if (porcupineSuccess) {
-          setUsePorcupine(true);
-          setIsInitialized(true);
-          if (mounted) setIsListening(enabled);
-          return;
-        }
-
-        // Fallback to Web Speech API
+        // Use Web Speech API for wake word detection
         const fallbackSuccess = initializeFallback();
         if (fallbackSuccess) {
-          setUsePorcupine(false);
           setIsInitialized(true);
           if (mounted) setIsListening(enabled);
         } else {
@@ -164,17 +121,28 @@ export function useWakeWord(options = {}) {
     if (!isInitialized) return;
 
     if (enabled && !isListening) {
-      if (usePorcupine && porcupineRef.current) {
-        // Porcupine start logic
-        setIsListening(true);
-      } else if (fallbackRecognitionRef.current) {
-        try {
-          fallbackRecognitionRef.current.start();
-          setIsListening(true);
-        } catch (error) {
-          setError(`Failed to start wake word detection: ${error.message}`);
-        }
-      }
+      // Request permission before starting
+      requestMicrophoneAccess()
+        .then((stream) => {
+          // Release the stream immediately - we just needed permission
+          stream.getTracks().forEach(track => track.stop());
+          
+          if (fallbackRecognitionRef.current) {
+            try {
+              fallbackRecognitionRef.current.start();
+              setIsListening(true);
+              setError(null);
+            } catch (error) {
+              console.error('[voice] Failed to start wake word detection:', error);
+              setError(`Failed to start wake word detection: ${error.message}`);
+            }
+          }
+        })
+        .catch((error) => {
+          console.error('[voice] Microphone permission denied:', error);
+          setError(`Microphone permission required: ${error.message}`);
+          setIsListening(false);
+        });
     } else if (!enabled && isListening) {
       if (fallbackRecognitionRef.current) {
         try {
@@ -185,7 +153,7 @@ export function useWakeWord(options = {}) {
         setIsListening(false);
       }
     }
-  }, [enabled, isListening, isInitialized, usePorcupine]);
+  }, [enabled, isListening, isInitialized]);
 
 
   const start = useCallback(async () => {
@@ -196,9 +164,12 @@ export function useWakeWord(options = {}) {
 
     // Request permission if needed
     try {
-      await requestMicrophoneAccess();
+      const stream = await requestMicrophoneAccess();
+      // Release the stream immediately - we just needed permission
+      stream.getTracks().forEach(track => track.stop());
     } catch (error) {
-      setError(`Microphone access required: ${error.message}`);
+      console.error('[voice] Microphone permission denied in start():', error);
+      setError(`Microphone access required: ${error.message}. Please allow microphone access in your browser settings.`);
       return;
     }
 
@@ -206,7 +177,9 @@ export function useWakeWord(options = {}) {
       try {
         fallbackRecognitionRef.current.start();
         setIsListening(true);
+        setError(null);
       } catch (error) {
+        console.error('[voice] Failed to start recognition:', error);
         setError(`Failed to start: ${error.message}`);
       }
     }
@@ -229,7 +202,6 @@ export function useWakeWord(options = {}) {
     error,
     start,
     stop,
-    usePorcupine,
   };
 }
 

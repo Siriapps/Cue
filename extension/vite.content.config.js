@@ -51,6 +51,36 @@ function copyManifestPlugin() {
           copyFileSync(iconFile, resolve(iconsDest, "icon.svg"));
         }
       }
+      
+      // Copy permission files
+      const permissionHtml = resolve(__dirname, "public/permission.html");
+      const permissionJs = resolve(__dirname, "public/permission.js");
+      if (existsSync(permissionHtml)) {
+        copyFileSync(permissionHtml, resolve(__dirname, "dist/permission.html"));
+      }
+      if (existsSync(permissionJs)) {
+        copyFileSync(permissionJs, resolve(__dirname, "dist/permission.js"));
+      }
+      
+      // Copy offscreen files
+      const offscreenHtml = resolve(__dirname, "public/offscreen.html");
+      const offscreenJs = resolve(__dirname, "public/offscreen.js");
+      if (existsSync(offscreenHtml)) {
+        copyFileSync(offscreenHtml, resolve(__dirname, "dist/offscreen.html"));
+      }
+      if (existsSync(offscreenJs)) {
+        copyFileSync(offscreenJs, resolve(__dirname, "dist/offscreen.js"));
+      }
+      
+      // Copy capture-popup files
+      const capturePopupHtml = resolve(__dirname, "public/capture-popup.html");
+      const capturePopupJs = resolve(__dirname, "public/capture-popup.js");
+      if (existsSync(capturePopupHtml)) {
+        copyFileSync(capturePopupHtml, resolve(__dirname, "dist/capture-popup.html"));
+      }
+      if (existsSync(capturePopupJs)) {
+        copyFileSync(capturePopupJs, resolve(__dirname, "dist/capture-popup.js"));
+      }
     },
   };
 }

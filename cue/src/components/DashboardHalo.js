@@ -187,12 +187,21 @@ function DashboardHalo() {
   }, [startRecognition, resetTranscript, stopRecognition]);
 
   // Handle wake word detection
-  const handleWakeWordDetected = useCallback(() => {
+  const handleWakeWordDetected = useCallback(async () => {
     console.log('[voice] Wake word "Hey Cue" detected');
     
     // Stop wake word detection first to free the microphone
     if (stopWakeWordRef.current) {
       stopWakeWordRef.current();
+    }
+    
+    // Ensure we have microphone permission before starting transcription
+    try {
+      await requestMicrophoneAccess();
+    } catch (error) {
+      console.error('[voice] Microphone permission denied after wake word:', error);
+      setVoiceError(`Microphone permission required: ${error.message}`);
+      return;
     }
     
     // Open chat panel
@@ -242,26 +251,38 @@ function DashboardHalo() {
 
   // Start transcription when isTranscribing becomes true (after wake word)
   useEffect(() => {
+    let timer = null;
+    
     if (isTranscribing && !isRecognitionListening) {
       console.log('[voice] Starting transcription after wake word...');
       // Ensure wake word is stopped first
       if (isWakeWordListening && stopWakeWordRef.current) {
         stopWakeWordRef.current();
       }
-      // Delay to ensure wake word recognition has fully released the microphone
-      const timer = setTimeout(() => {
-        console.log('[voice] Attempting to start transcription...');
-        try {
-          if (startRecognitionRef.current) {
-            startRecognitionRef.current();
-          }
-        } catch (error) {
-          console.error('[voice] Failed to start transcription:', error);
-          setVoiceError(`Failed to start transcription: ${error.message}`);
+      // Ensure we have microphone permission before starting
+      requestMicrophoneAccess()
+        .then((stream) => {
+          // Release the stream immediately - we just needed permission
+          stream.getTracks().forEach(track => track.stop());
+          // Delay to ensure wake word recognition has fully released the microphone
+          timer = setTimeout(() => {
+            console.log('[voice] Attempting to start transcription...');
+            try {
+              if (startRecognitionRef.current) {
+                startRecognitionRef.current();
+              }
+            } catch (error) {
+              console.error('[voice] Failed to start transcription:', error);
+              setVoiceError(`Failed to start transcription: ${error.message}`);
+              setIsTranscribing(false);
+            }
+          }, 400);
+        })
+        .catch((error) => {
+          console.error('[voice] Microphone permission denied for transcription:', error);
+          setVoiceError(`Microphone permission required: ${error.message}`);
           setIsTranscribing(false);
-        }
-      }, 400);
-      return () => clearTimeout(timer);
+        });
     } else if (!isTranscribing && isRecognitionListening) {
       console.log('[voice] Stopping transcription...');
       stopRecognition();
@@ -275,6 +296,12 @@ function DashboardHalo() {
         }, 500);
       }
     }
+    
+    return () => {
+      if (timer) {
+        clearTimeout(timer);
+      }
+    };
   }, [isTranscribing, isRecognitionListening, isWakeWordListening, startRecognition, stopRecognition, wakeWordEnabled, needsPermission, startWakeWord, stopWakeWord]);
 
   // Update listening state
@@ -296,19 +323,57 @@ function DashboardHalo() {
   // Request microphone permission
   const handleRequestPermission = useCallback(async () => {
     try {
-      await requestMicrophoneAccess();
+      console.log('[voice] Requesting microphone permission...');
+      const stream = await requestMicrophoneAccess();
+      // Release the stream immediately - we just needed permission
+      stream.getTracks().forEach(track => track.stop());
+      console.log('[voice] Microphone permission granted');
       setNeedsPermission(false);
       setWakeWordEnabled(true);
       setVoiceError(null);
     } catch (error) {
-      setVoiceError(`Permission denied: ${error.message}`);
+      console.error('[voice] Permission denied:', error);
+      setVoiceError(`Permission denied: ${error.message}. Please allow microphone access in your browser settings (click the lock icon in the address bar).`);
     }
   }, []);
 
   // Manual mic button click
   const handleMicClick = useCallback(async () => {
     if (needsPermission) {
-      await handleRequestPermission();
+      try {
+        await handleRequestPermission();
+        // After permission is granted, check if we should start transcription
+        if (!isTranscribing) {
+          // Start transcription after permission is granted
+          setChatOpen(true);
+          setAutoSendEnabled(true);
+          if (resetTranscriptRef.current) {
+            resetTranscriptRef.current();
+          }
+          setQuery('');
+          setTimeout(() => {
+            setIsTranscribing(true);
+            setTimeout(() => {
+              if (startRecognitionRef.current) {
+                startRecognitionRef.current();
+              }
+            }, 200);
+          }, 200);
+        }
+      } catch (error) {
+        setVoiceError(`Failed to get microphone permission: ${error.message}`);
+      }
+      return;
+    }
+
+    // Ensure we have permission even if needsPermission is false
+    try {
+      const permission = await checkMicrophonePermission();
+      if (permission !== 'granted') {
+        await requestMicrophoneAccess();
+      }
+    } catch (error) {
+      setVoiceError(`Microphone permission required: ${error.message}`);
       return;
     }
 

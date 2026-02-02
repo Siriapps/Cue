@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState, useCallback, useRef } from "react"
 import { startGoLive, stopGoLive } from "./go_live";
 import { summarizePage } from "./readability";
 import { startMicRecording, pauseMicRecording, resumeMicRecording, stopMicRecording } from "./session_recorder";
+import { useWakeWord } from "./voice/useWakeWord";
 
 const LIBRARY_URL = "http://localhost:3001";
 
@@ -173,19 +174,29 @@ export function HaloStrip(): React.JSX.Element {
     }
   };
 
+  // Wake Word Integration
+  useWakeWord({
+    enabled: sessionState === "idle" && !isLive, // Disable when recording or live
+    onWakeWordDetected: () => {
+      console.log("[cue] Wake word detected! Opening chat...");
+      setChatOpen(true);
+      // Optional: Play a sound or visual cue
+    }
+  });
+
   // Session Controls
   const handleStartSession = async () => {
     try {
       setSessionState("recording");
       setSessionStartTime(Date.now());
-      
+
       // Start mic recording
       await startMicRecording();
-      
+
       // Get page info for the session
       const pageTitle = document.title;
       const pageUrl = window.location.href;
-      
+
       // Notify background script
       try {
         if (!chrome?.runtime?.id) {
@@ -252,10 +263,10 @@ export function HaloStrip(): React.JSX.Element {
   const handleStopSession = async () => {
     try {
       setSessionState("idle");
-      
+
       // Stop mic recording and get audio blob
       const audioBlob = await stopMicRecording();
-      
+
       // Convert to base64
       const audioBase64 = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
@@ -267,11 +278,11 @@ export function HaloStrip(): React.JSX.Element {
         };
         reader.readAsDataURL(audioBlob);
       });
-      
+
       // Get page info
       const pageTitle = document.title;
       const pageUrl = window.location.href;
-      
+
       // Send to background for processing
       try {
         if (!chrome?.runtime?.id) {
@@ -378,12 +389,12 @@ export function HaloStrip(): React.JSX.Element {
         <div className="halo-collapsed-icon">
           <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
             <circle cx="12" cy="12" r="10" fill="url(#logoGradCollapsed)" />
-            <path d="M8 12C8 9.79 9.79 8 12 8C14.21 8 16 9.79 16 12" stroke="white" strokeWidth="2" strokeLinecap="round"/>
-            <circle cx="12" cy="14" r="2" fill="white"/>
+            <path d="M8 12C8 9.79 9.79 8 12 8C14.21 8 16 9.79 16 12" stroke="white" strokeWidth="2" strokeLinecap="round" />
+            <circle cx="12" cy="14" r="2" fill="white" />
             <defs>
               <linearGradient id="logoGradCollapsed" x1="2" y1="2" x2="22" y2="22">
-                <stop stopColor="#6366f1"/>
-                <stop offset="1" stopColor="#8b5cf6"/>
+                <stop stopColor="#6366f1" />
+                <stop offset="1" stopColor="#8b5cf6" />
               </linearGradient>
             </defs>
           </svg>
@@ -402,12 +413,12 @@ export function HaloStrip(): React.JSX.Element {
           <div className="halo-logo">
             <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
               <circle cx="12" cy="12" r="10" fill="url(#logoGrad)" />
-              <path d="M8 12C8 9.79 9.79 8 12 8C14.21 8 16 9.79 16 12" stroke="white" strokeWidth="2" strokeLinecap="round"/>
-              <circle cx="12" cy="14" r="2" fill="white"/>
+              <path d="M8 12C8 9.79 9.79 8 12 8C14.21 8 16 9.79 16 12" stroke="white" strokeWidth="2" strokeLinecap="round" />
+              <circle cx="12" cy="14" r="2" fill="white" />
               <defs>
                 <linearGradient id="logoGrad" x1="2" y1="2" x2="22" y2="22">
-                  <stop stopColor="#6366f1"/>
-                  <stop offset="1" stopColor="#8b5cf6"/>
+                  <stop stopColor="#6366f1" />
+                  <stop offset="1" stopColor="#8b5cf6" />
                 </linearGradient>
               </defs>
             </svg>
@@ -420,7 +431,7 @@ export function HaloStrip(): React.JSX.Element {
           {sessionState === "idle" ? (
             <button className="halo-btn start-session" onClick={handleStartSession}>
               <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
-                <path d="M8 5v14l11-7z"/>
+                <path d="M8 5v14l11-7z" />
               </svg>
               <span>Start Session</span>
             </button>
@@ -436,14 +447,14 @@ export function HaloStrip(): React.JSX.Element {
               {sessionState === "recording" ? (
                 <button className="halo-btn pause-btn" onClick={handlePauseSession} title="Pause">
                   <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
-                    <rect x="6" y="4" width="4" height="16"/>
-                    <rect x="14" y="4" width="4" height="16"/>
+                    <rect x="6" y="4" width="4" height="16" />
+                    <rect x="14" y="4" width="4" height="16" />
                   </svg>
                 </button>
               ) : (
                 <button className="halo-btn resume-btn" onClick={handleResumeSession} title="Resume">
                   <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
-                    <path d="M8 5v14l11-7z"/>
+                    <path d="M8 5v14l11-7z" />
                   </svg>
                 </button>
               )}
@@ -451,7 +462,7 @@ export function HaloStrip(): React.JSX.Element {
               {/* Stop Button */}
               <button className="halo-btn stop-btn" onClick={handleStopSession} title="Stop & Save">
                 <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
-                  <rect x="6" y="6" width="12" height="12" rx="2"/>
+                  <rect x="6" y="6" width="12" height="12" rx="2" />
                 </svg>
                 <span>Stop</span>
               </button>
@@ -474,7 +485,7 @@ export function HaloStrip(): React.JSX.Element {
         {/* Ask AI Button */}
         <button className="halo-btn ask-ai" onClick={toggleChat}>
           <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
-            <path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z"/>
+            <path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z" />
           </svg>
           <span>Ask AI</span>
         </button>
@@ -482,10 +493,10 @@ export function HaloStrip(): React.JSX.Element {
         {/* Library Button */}
         <button className="halo-btn library" onClick={openLibrary}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
-            <rect x="3" y="3" width="7" height="7"/>
-            <rect x="14" y="3" width="7" height="7"/>
-            <rect x="14" y="14" width="7" height="7"/>
-            <rect x="3" y="14" width="7" height="7"/>
+            <rect x="3" y="3" width="7" height="7" />
+            <rect x="14" y="3" width="7" height="7" />
+            <rect x="14" y="14" width="7" height="7" />
+            <rect x="3" y="14" width="7" height="7" />
           </svg>
           <span>Library</span>
         </button>
@@ -494,7 +505,7 @@ export function HaloStrip(): React.JSX.Element {
       {/* Minimize Button - Right Side */}
       <button className="halo-collapse-btn" onClick={toggleCollapse} title="Minimize">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-          <polyline points="6 9 12 15 18 9"/>
+          <polyline points="6 9 12 15 18 9" />
         </svg>
       </button>
 

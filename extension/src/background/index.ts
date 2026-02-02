@@ -34,6 +34,73 @@ function blobToBase64(blob: Blob): Promise<string> {
   });
 }
 
+// ================== OFFSCREEN DOCUMENT MANAGEMENT ==================
+let creatingOffscreenDocument: Promise<void> | null = null;
+
+async function setupOffscreenDocument(path: string) {
+  // Check if offscreen document already exists using getContexts
+  const existingContexts = await chrome.runtime.getContexts({
+    contextTypes: ['OFFSCREEN_DOCUMENT'] as any,
+    documentUrls: [path]
+  });
+
+  // Always close and recreate to ensure we have the latest version
+  // This prevents caching issues with offscreen documents
+  if (existingContexts.length > 0) {
+    try {
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/23f45ddd-244c-4bbc-b1ce-d6e960bc0c31',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'background/index.ts:48',message:'Closing existing offscreen document',data:{documentId:existingContexts[0].documentId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
+      // #endregion
+      await chrome.offscreen.closeDocument({ documentId: existingContexts[0].documentId } as any);
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/23f45ddd-244c-4bbc-b1ce-d6e960bc0c31',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'background/index.ts:52',message:'Offscreen document closed successfully',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
+      // #endregion
+      // Wait a moment for Chrome to fully close it
+      await new Promise(resolve => setTimeout(resolve, 200));
+    } catch (e) {
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/23f45ddd-244c-4bbc-b1ce-d6e960bc0c31',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'background/index.ts:57',message:'Error closing offscreen document',data:{error:String(e)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
+      // #endregion
+      // Ignore errors if document is already closed
+    }
+  }
+
+  // Create offscreen document
+  if (creatingOffscreenDocument) {
+    await creatingOffscreenDocument;
+  } else {
+    creatingOffscreenDocument = (async () => {
+      try {
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/23f45ddd-244c-4bbc-b1ce-d6e960bc0c31',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'background/index.ts:62',message:'Creating new offscreen document',data:{path},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
+        // #endregion
+        await chrome.offscreen.createDocument({
+          url: path,
+          reasons: ['USER_MEDIA'] as any,
+          justification: 'Wake word detection and audio capture from tab'
+        });
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/23f45ddd-244c-4bbc-b1ce-d6e960bc0c31',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'background/index.ts:70',message:'Offscreen document created successfully',data:{path},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
+        // #endregion
+      } catch (error: any) {
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/23f45ddd-244c-4bbc-b1ce-d6e960bc0c31',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'background/index.ts:73',message:'Error creating offscreen document',data:{error:error.message},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
+        // #endregion
+        if (!error.message.startsWith('Only a single offscreen')) {
+          console.error('[cue] Failed to create offscreen document:', error);
+          throw error;
+        }
+      }
+    })();
+
+    try {
+      await creatingOffscreenDocument;
+    } finally {
+      creatingOffscreenDocument = null;
+    }
+  }
+}
+
 // ================== SESSION RECORDING ==================
 
 async function startSessionRecording(info: { title: string; url: string; startTime: number }) {
@@ -71,7 +138,7 @@ async function stopSessionRecording(payload: {
 
   try {
     console.log("[cue] Saving session, audio size:", payload.audio_base64.length, "base64 chars");
-    
+
     // Send to backend for transcription and save
     const response = await fetch(`${API_BASE}/sessions/save`, {
       method: "POST",
@@ -104,7 +171,7 @@ async function stopSessionRecording(payload: {
         // If we can't read the error, use status text
         console.error("[cue] Failed to read error response:", e);
       }
-      
+
       console.error("[cue] Backend error:", errorMessage);
       sessionState = "idle";
       sessionInfo = null;
@@ -255,7 +322,7 @@ async function sendChunkToBackendHttp(audio_base64: string, mimeType: string) {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tab?.id) {
       const messageType = data.type === "diagram" ? "DIAGRAM_RECEIVED" :
-                          data.type === "pose" ? "POSE_UPDATE" : "MOTION_DETECTED";
+        data.type === "pose" ? "POSE_UPDATE" : "MOTION_DETECTED";
       chrome.tabs.sendMessage(tab.id, { type: messageType, payload: data });
     }
   }
@@ -328,6 +395,63 @@ function stopGoLiveCapture() {
 // ================== MESSAGE HANDLERS ==================
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  // --- Wake Word ---
+  if (message.type === "START_WAKE_WORD") {
+    setupOffscreenDocument("offscreen.html")
+      .then(() => {
+        // Small delay to ensure offscreen document is ready
+        setTimeout(() => {
+          chrome.runtime.sendMessage({
+            type: "START_WAKE_WORD",
+            target: "offscreen"
+          }, (response) => {
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/23f45ddd-244c-4bbc-b1ce-d6e960bc0c31',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'background/index.ts:381',message:'Received response from offscreen START_WAKE_WORD',data:{hasResponse:!!response,success:response?.success,error:response?.error,hasLastError:!!chrome.runtime.lastError,lastErrorMessage:chrome.runtime.lastError?.message},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+            // #endregion
+            if (chrome.runtime.lastError) {
+              console.warn("[cue] Failed to send START to offscreen:", chrome.runtime.lastError);
+              sendResponse({ success: false, error: chrome.runtime.lastError.message });
+              return;
+            }
+            if (response && !response.success) {
+              const err = response.error || "";
+              // #region agent log
+              fetch('http://127.0.0.1:7242/ingest/23f45ddd-244c-4bbc-b1ce-d6e960bc0c31',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'background/index.ts:389',message:'Checking error type from offscreen',data:{error:err,isPermissionDenied:err==="PERMISSION_DENIED",hasPermission:err.includes("permission"),hasNotAllowed:err.includes("not-allowed"),hasDeviceNotFound:err.includes("not found")||err.includes("device")},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+              // #endregion
+              if (err === "PERMISSION_DENIED" || err.includes("permission") || err.includes("not-allowed") || err.includes("Permission denied") || err.includes("not found") || err.includes("device") || err.includes("NotFoundError")) {
+                console.warn("[cue] Wake word permission/device issue. Opening permission page.");
+                chrome.tabs.create({ url: chrome.runtime.getURL("permission.html") });
+              }
+            }
+            sendResponse(response || { success: false, error: "No response from offscreen" });
+          });
+        }, 100);
+      })
+      .catch((error) => {
+        console.error("[cue] Failed to setup offscreen document:", error);
+        sendResponse({ success: false, error: error.message });
+      });
+    return true;
+  }
+
+  if (message.type === "STOP_WAKE_WORD") {
+    chrome.runtime.sendMessage({
+      type: "STOP_WAKE_WORD",
+      target: "offscreen"
+    });
+    sendResponse({ success: true });
+    return;
+  }
+
+  if (message.type === "WAKE_WORD_DETECTED") {
+    chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+      if (tab?.id) {
+        chrome.tabs.sendMessage(tab.id, { type: "WAKE_WORD_DETECTED" });
+      }
+    });
+    return;
+  }
+
   // Library
   if (message.type === "OPEN_LIBRARY") {
     try {
@@ -431,6 +555,43 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === "GO_LIVE_STOP") {
     stopGoLiveCapture();
     sendResponse({ status: "ok" });
+    return;
+  }
+
+  // Permission Granted (from permission.html)
+  if (message.type === "PERMISSION_GRANTED") {
+    console.log("[cue] Permission granted, retrying wake word detection...");
+    
+    // Small delay to ensure permission is fully registered
+    setTimeout(() => {
+      // Try to restart wake word detection in offscreen document
+      chrome.runtime.sendMessage({
+        type: "START_WAKE_WORD",
+        target: "offscreen"
+      }, (response) => {
+        if (response && response.success) {
+          console.log("[cue] Wake word detection restarted successfully after permission grant");
+        } else {
+          console.warn("[cue] Failed to restart wake word after permission grant:", response?.error);
+        }
+      });
+      
+      // Broadcast to all tabs to retry
+      chrome.tabs.query({}, (tabs) => {
+        for (const tab of tabs) {
+          if (tab.id) {
+            chrome.tabs.sendMessage(tab.id, { type: "PERMISSION_UPDATED" }, () => {
+              // Ignore errors - tab might not have content script
+              if (chrome.runtime.lastError) {
+                // Expected for some tabs
+              }
+            });
+          }
+        }
+      });
+    }, 500);
+    
+    sendResponse({ success: true });
     return;
   }
 });

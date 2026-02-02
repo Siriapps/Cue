@@ -205,4 +205,166 @@ async function stopCapture() {
   });
 }
 
+// ================== WAKE WORD DETECTION ==================
+
+let recognition = null;
+let isListening = false;
+let isRestarting = false;
+let wakeWordDetected = false;
+
+async function startWakeWordDetection() {
+  if (isListening) return;
+
+  // Check for SpeechRecognition support
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    throw new Error('Speech Recognition not available');
+  }
+
+  try {
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/23f45ddd-244c-4bbc-b1ce-d6e960bc0c31',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'offscreen.js:227',message:'Attempting getUserMedia in offscreen',data:{hasMediaDevices:!!navigator.mediaDevices},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
+    // Request mic permission first to be sure
+    // This requires the extension itself to have permission
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/23f45ddd-244c-4bbc-b1ce-d6e960bc0c31',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'offscreen.js:230',message:'getUserMedia succeeded in offscreen',data:{trackCount:stream.getTracks().length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
+    stream.getTracks().forEach(t => t.stop()); // Release immediately
+    console.log('[cue offscreen] Microphone permission granted');
+  } catch (e) {
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/23f45ddd-244c-4bbc-b1ce-d6e960bc0c31',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'offscreen.js:234',message:'getUserMedia failed in offscreen',data:{errorName:e.name,errorMessage:e.message,errorString:String(e)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
+    console.error('[cue offscreen] Mic permission check failed:', e.message || e);
+    // Check for specific permission errors
+    const errorMsg = e.message || e.toString() || '';
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/23f45ddd-244c-4bbc-b1ce-d6e960bc0c31',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'offscreen.js:238',message:'Checking error type in offscreen',data:{errorMsg,hasPermission:errorMsg.includes('permission'),hasNotAllowed:errorMsg.includes('not-allowed'),hasDeviceNotFound:errorMsg.includes('not found')||errorMsg.includes('device')},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
+    if (errorMsg.includes('permission') || errorMsg.includes('not-allowed') || errorMsg.includes('Permission denied')) {
+      // Explicitly throw a permission error string that background script checks for
+      throw new Error('PERMISSION_DENIED');
+    }
+    // Handle device not found errors - treat as permission issue that needs user action
+    if (errorMsg.includes('not found') || errorMsg.includes('device') || e.name === 'NotFoundError') {
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/23f45ddd-244c-4bbc-b1ce-d6e960bc0c31',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'offscreen.js:245',message:'Converting device not found to PERMISSION_DENIED',data:{errorName:e.name,errorMessage:e.message},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
+      // Device not found often means permission denied at system level - open permission page
+      throw new Error('PERMISSION_DENIED');
+    }
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/23f45ddd-244c-4bbc-b1ce-d6e960bc0c31',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'offscreen.js:251',message:'Re-throwing original error from offscreen',data:{errorName:e.name,errorMessage:e.message},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
+    // Re-throw other errors
+    throw e;
+  }
+
+  recognition = new SpeechRecognition();
+  recognition.continuous = true;
+  recognition.interimResults = false;
+  recognition.lang = 'en-US';
+
+  recognition.onresult = (event) => {
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const transcript = event.results[i][0].transcript.toLowerCase().trim();
+      console.log('[cue offscreen] Transcript:', transcript);
+      if (transcript.includes('hey cue') ||
+        transcript.includes('hey q') ||
+        transcript.includes('heycu') ||
+        transcript.includes('hey queue') ||
+        transcript.startsWith('hey cue') ||
+        transcript.includes('hey, cue')) {
+
+        console.log('[cue offscreen] Wake Word Detected!');
+        wakeWordDetected = true;
+
+        // Notify background -> content script
+        chrome.runtime.sendMessage({
+          type: 'WAKE_WORD_DETECTED',
+          target: 'background'
+        });
+
+        // Optional: briefly stop to prevent multiple triggers
+        stopWakeWordDetection();
+        return;
+      }
+    }
+  };
+
+  recognition.onerror = (event) => {
+    // console.log('[cue offscreen] Recognition error:', event.error);
+    if (event.error === 'aborted' || event.error === 'not-allowed') {
+      isListening = false;
+      return;
+    }
+    // Auto-restart on other errors if supposed to be listening
+    if (isListening && !isRestarting && !wakeWordDetected) {
+      handleRestart();
+    }
+  };
+
+  recognition.onend = () => {
+    console.log('[cue offscreen] Recognition ended');
+    if (isListening && !isRestarting && !wakeWordDetected) {
+      handleRestart();
+    }
+  };
+
+  try {
+    recognition.start();
+    isListening = true;
+    wakeWordDetected = false;
+    isRestarting = false;
+    console.log('[cue offscreen] Speech recognition started');
+  } catch (e) {
+    console.error('[cue offscreen] Failed to start recognition:', e);
+    throw e;
+  }
+}
+
+function stopWakeWordDetection() {
+  isListening = false;
+  if (recognition) {
+    try {
+      recognition.stop();
+    } catch (e) { }
+    recognition = null;
+  }
+}
+
+function handleRestart() {
+  isRestarting = true;
+  setTimeout(() => {
+    if (isListening) {
+      try {
+        if (recognition) recognition.start();
+      } catch (e) { }
+    }
+    isRestarting = false;
+  }, 1000);
+}
+
+// Add message listeners for wake word
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.target !== 'offscreen') return;
+
+  if (message.type === 'START_WAKE_WORD') {
+    console.log('[cue offscreen] Starting wake word detection');
+    startWakeWordDetection()
+      .then(() => sendResponse({ success: true }))
+      .catch(err => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === 'STOP_WAKE_WORD') {
+    console.log('[cue offscreen] Stopping wake word detection');
+    stopWakeWordDetection();
+    sendResponse({ success: true });
+    return false;
+  }
+});
+
 console.log('[cue offscreen] Offscreen document loaded and ready');
