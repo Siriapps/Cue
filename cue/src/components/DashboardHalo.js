@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useWakeWord } from '../features/voice/useWakeWord';
+// import { useWakeWord } from '../features/voice/useWakeWord'; // Disabled - wake word only works in extension
 import { useSpeechRecognition } from '../features/voice/useSpeechRecognition';
 import { checkMicrophonePermission, requestMicrophoneAccess } from '../features/voice/voiceUtils';
 
@@ -15,10 +15,10 @@ function DashboardHalo() {
   // Voice state
   const [isVoiceListening, setIsVoiceListening] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
-  const [wakeWordEnabled, setWakeWordEnabled] = useState(false);
+  const [wakeWordEnabled, setWakeWordEnabled] = useState(false); // Disabled - wake word only works in extension
   const [needsPermission, setNeedsPermission] = useState(false);
   const [voiceError, setVoiceError] = useState(null);
-  const [autoSendEnabled, setAutoSendEnabled] = useState(false); // Track if we should auto-send after wake word
+  // autoSendEnabled removed - not needed since wake word is disabled in dashboard
   
   // Silence detection for auto-send
   const silenceTimeoutRef = useRef(null);
@@ -33,12 +33,13 @@ function DashboardHalo() {
   const startWakeWordRef = useRef(null);
   const stopRecognitionRef = useRef(null);
   
-  // Check microphone permission on mount
+  // Check microphone permission on mount (but don't enable wake word - it's extension-only)
   useEffect(() => {
     checkMicrophonePermission().then((permission) => {
       if (permission === 'granted') {
         setNeedsPermission(false);
-        setWakeWordEnabled(true);
+        // Don't enable wake word - it only works in the extension floating tab
+        setWakeWordEnabled(false);
       } else {
         setNeedsPermission(true);
       }
@@ -63,8 +64,7 @@ function DashboardHalo() {
       clearTimeout(silenceTimeoutRef.current);
       silenceTimeoutRef.current = null;
     }
-    // Reset auto-send flag
-    setAutoSendEnabled(false);
+    // Reset auto-send flag (removed - not needed)
     
     // Auto-submit the query
     const currentQuery = queryText.trim();
@@ -90,25 +90,14 @@ function DashboardHalo() {
       } else {
         setAiAnswer(data.error || 'Failed to get AI response');
       }
-      // Resume wake word detection after query is processed
-      if (wakeWordEnabled && !needsPermission && startWakeWordRef.current) {
-        setTimeout(() => {
-          console.log('[voice] Resuming wake word detection after auto-send...');
-          startWakeWordRef.current();
-        }, 500);
-      }
+      // Wake word detection is disabled in dashboard - only works in extension
     })
     .catch(error => {
       setIsThinking(false);
       setAiAnswer('Error connecting to server');
-      // Resume wake word detection even on error
-      if (wakeWordEnabled && !needsPermission && startWakeWordRef.current) {
-        setTimeout(() => {
-          startWakeWordRef.current();
-        }, 500);
-      }
+      // Wake word detection is disabled in dashboard - only works in extension
     });
-  }, [wakeWordEnabled, needsPermission]);
+  }, []);
 
   // Update ref when function changes
   useEffect(() => {
@@ -138,7 +127,7 @@ function DashboardHalo() {
         }
       }, 1500); // 1.5 seconds of silence
     }
-  }, [isTranscribing]);
+  }, [isTranscribing, autoSendQueryRef]);
 
   // Handle final transcript - auto-send when user stops speaking
   const handleFinalTranscript = useCallback((text) => {
@@ -150,15 +139,14 @@ function DashboardHalo() {
       silenceTimeoutRef.current = null;
     }
     
-    // Auto-send if we're transcribing (either wake word or manual mic)
+    // Auto-send if we're transcribing (manual mic)
     if (isTranscribing && text.trim() && autoSendQueryRef.current) {
       autoSendQueryRef.current(text.trim());
     }
-  }, [isTranscribing]);
+  }, [isTranscribing, autoSendQueryRef]);
 
   const {
     isListening: isRecognitionListening,
-    transcript,
     error: recognitionError,
     start: startRecognition,
     stop: stopRecognition,
@@ -187,61 +175,16 @@ function DashboardHalo() {
   }, [startRecognition, resetTranscript, stopRecognition]);
 
   // Handle wake word detection
-  const handleWakeWordDetected = useCallback(async () => {
-    console.log('[voice] Wake word "Hey Cue" detected');
-    
-    // Stop wake word detection first to free the microphone
-    if (stopWakeWordRef.current) {
-      stopWakeWordRef.current();
-    }
-    
-    // Ensure we have microphone permission before starting transcription
-    try {
-      await requestMicrophoneAccess();
-    } catch (error) {
-      console.error('[voice] Microphone permission denied after wake word:', error);
-      setVoiceError(`Microphone permission required: ${error.message}`);
-      return;
-    }
-    
-    // Open chat panel
-    setChatOpen(true);
-    
-    // Reset transcript and clear query
-    if (resetTranscriptRef.current) {
-      resetTranscriptRef.current();
-    }
-    setQuery('');
-    
-    // Enable auto-send for wake word triggered commands
-    setAutoSendEnabled(true);
-    
-    // Wait a moment for wake word recognition to fully release the microphone
-    // Then start transcription
-    setTimeout(() => {
-      setIsTranscribing(true);
-      // The useSpeechRecognition hook will auto-start when enabled becomes true
-      // But we'll also manually start it to ensure it happens
-      setTimeout(() => {
-        if (startRecognitionRef.current) {
-          startRecognitionRef.current();
-        }
-      }, 100);
-    }, 300);
-  }, []);
+  // Wake word handler - DISABLED: Wake word only works in extension floating tab
+  // Users should use the extension's floating Halo strip for "Hey Cue" functionality
+  // Removed handleWakeWordDetected - no longer needed
 
-  // Wake word detection - disable when transcribing to avoid conflicts
-  const {
-    isListening: isWakeWordListening,
-    isInitialized: wakeWordInitialized,
-    error: wakeWordError,
-    start: startWakeWord,
-    stop: stopWakeWord,
-  } = useWakeWord({
-    wakePhrase: 'Hey Cue',
-    onWakeWordDetected: handleWakeWordDetected,
-    enabled: wakeWordEnabled && !needsPermission && !isTranscribing,
-  });
+  // Wake word detection - DISABLED: Only works in extension floating tab, not in dashboard
+  // Mock values since wake word is disabled
+  const isWakeWordListening = false;
+  const wakeWordError = null;
+  const startWakeWord = useCallback(() => {}, []);
+  const stopWakeWord = useCallback(() => {}, []);
 
   // Update refs when wake word functions are available
   useEffect(() => {
@@ -286,15 +229,9 @@ function DashboardHalo() {
     } else if (!isTranscribing && isRecognitionListening) {
       console.log('[voice] Stopping transcription...');
       stopRecognition();
-      // Reset auto-send flag when transcription stops
-      setAutoSendEnabled(false);
-      // Resume wake word detection after transcription stops
-      if (wakeWordEnabled && !needsPermission && startWakeWordRef.current) {
-        setTimeout(() => {
-          console.log('[voice] Resuming wake word detection...');
-          startWakeWordRef.current();
-        }, 500);
-      }
+      // Reset auto-send flag when transcription stops (removed - not needed)
+      // Wake word detection is disabled in dashboard - only works in extension
+      // No need to resume wake word detection
     }
     
     return () => {
@@ -320,7 +257,7 @@ function DashboardHalo() {
     }
   }, [wakeWordError, recognitionError]);
 
-  // Request microphone permission
+  // Request microphone permission (for manual mic button, not wake word)
   const handleRequestPermission = useCallback(async () => {
     try {
       console.log('[voice] Requesting microphone permission...');
@@ -329,7 +266,8 @@ function DashboardHalo() {
       stream.getTracks().forEach(track => track.stop());
       console.log('[voice] Microphone permission granted');
       setNeedsPermission(false);
-      setWakeWordEnabled(true);
+      // Don't enable wake word - it only works in extension
+      setWakeWordEnabled(false);
       setVoiceError(null);
     } catch (error) {
       console.error('[voice] Permission denied:', error);
@@ -346,7 +284,7 @@ function DashboardHalo() {
         if (!isTranscribing) {
           // Start transcription after permission is granted
           setChatOpen(true);
-          setAutoSendEnabled(true);
+          // Auto-send enabled (removed state - not needed)
           if (resetTranscriptRef.current) {
             resetTranscriptRef.current();
           }
@@ -381,24 +319,16 @@ function DashboardHalo() {
       // Stop transcription
       stopRecognition();
       setIsTranscribing(false);
-      setAutoSendEnabled(false); // Disable auto-send when manually stopping
+      // Auto-send disabled when manually stopping (removed state - not needed)
       if (resetTranscriptRef.current) {
         resetTranscriptRef.current();
       }
-      // Resume wake word detection
-      if (wakeWordEnabled && !needsPermission && startWakeWordRef.current) {
-        setTimeout(() => {
-          startWakeWordRef.current();
-        }, 300);
-      }
+      // Wake word detection is disabled in dashboard - only works in extension
     } else {
-      // Stop wake word detection first
-      if (stopWakeWordRef.current) {
-        stopWakeWordRef.current();
-      }
+      // Wake word detection is disabled in dashboard - only works in extension
       // Start transcription (manual mic - also auto-sends on silence)
       setChatOpen(true);
-      setAutoSendEnabled(true); // Manual mic also auto-sends when user stops speaking
+      // Manual mic also auto-sends when user stops speaking
       if (resetTranscriptRef.current) {
         resetTranscriptRef.current();
       }
@@ -412,7 +342,7 @@ function DashboardHalo() {
         }, 200);
       }, 200);
     }
-  }, [needsPermission, isTranscribing, handleRequestPermission, stopRecognition, wakeWordEnabled]);
+  }, [needsPermission, isTranscribing, handleRequestPermission, stopRecognition]);
 
   const handleAsk = async () => {
     if (!query.trim()) return;

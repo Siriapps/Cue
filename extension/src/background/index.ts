@@ -395,40 +395,53 @@ function stopGoLiveCapture() {
 // ================== MESSAGE HANDLERS ==================
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  // Forward offscreen logs to main console
+  if (message.type === "OFFSCREEN_LOG") {
+    const logMethod = message.level === 'error' ? console.error : message.level === 'warn' ? console.warn : console.log;
+    logMethod(message.message);
+    return;
+  }
+
   // --- Wake Word ---
   if (message.type === "START_WAKE_WORD") {
+    console.log("[cue background] START_WAKE_WORD received, setting up offscreen document...");
     setupOffscreenDocument("offscreen.html")
       .then(() => {
-        // Small delay to ensure offscreen document is ready
+        console.log("[cue background] Offscreen document ready, sending START_WAKE_WORD message...");
+        // Longer delay to ensure offscreen document script is fully loaded
         setTimeout(() => {
+          console.log("[cue background] Sending message to offscreen document...");
           chrome.runtime.sendMessage({
             type: "START_WAKE_WORD",
             target: "offscreen"
           }, (response) => {
-            // #region agent log
-            fetch('http://127.0.0.1:7242/ingest/23f45ddd-244c-4bbc-b1ce-d6e960bc0c31',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'background/index.ts:381',message:'Received response from offscreen START_WAKE_WORD',data:{hasResponse:!!response,success:response?.success,error:response?.error,hasLastError:!!chrome.runtime.lastError,lastErrorMessage:chrome.runtime.lastError?.message},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-            // #endregion
+            console.log("[cue background] Response from offscreen:", response);
             if (chrome.runtime.lastError) {
-              console.warn("[cue] Failed to send START to offscreen:", chrome.runtime.lastError);
+              console.error("[cue background] Error sending to offscreen:", chrome.runtime.lastError.message);
               sendResponse({ success: false, error: chrome.runtime.lastError.message });
+              return;
+            }
+            if (!response) {
+              console.error("[cue background] No response from offscreen document!");
+              sendResponse({ success: false, error: "No response from offscreen - document may not be loaded" });
               return;
             }
             if (response && !response.success) {
               const err = response.error || "";
-              // #region agent log
-              fetch('http://127.0.0.1:7242/ingest/23f45ddd-244c-4bbc-b1ce-d6e960bc0c31',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'background/index.ts:389',message:'Checking error type from offscreen',data:{error:err,isPermissionDenied:err==="PERMISSION_DENIED",hasPermission:err.includes("permission"),hasNotAllowed:err.includes("not-allowed"),hasDeviceNotFound:err.includes("not found")||err.includes("device")},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-              // #endregion
+              console.error("[cue background] Offscreen returned error:", err);
               if (err === "PERMISSION_DENIED" || err.includes("permission") || err.includes("not-allowed") || err.includes("Permission denied") || err.includes("not found") || err.includes("device") || err.includes("NotFoundError")) {
                 console.warn("[cue] Wake word permission/device issue. Opening permission page.");
                 chrome.tabs.create({ url: chrome.runtime.getURL("permission.html") });
               }
+            } else {
+              console.log("[cue background] Wake word detection started successfully!");
             }
             sendResponse(response || { success: false, error: "No response from offscreen" });
           });
-        }, 100);
+        }, 500); // Increased delay to 500ms
       })
       .catch((error) => {
-        console.error("[cue] Failed to setup offscreen document:", error);
+        console.error("[cue background] Failed to setup offscreen document:", error);
         sendResponse({ success: false, error: error.message });
       });
     return true;
