@@ -271,6 +271,12 @@ export function HaloStrip(): React.JSX.Element {
   } = useWakeWord({
     enabled: sessionState === "idle" && !isLive && !isTranscribing, // Disable when recording, live, or transcribing
     onWakeWordDetected: async () => {
+      // Check if this tab is the active/focused tab before responding
+      if (!document.hasFocus()) {
+        console.log("[cue] Wake word detected but this tab is not active, ignoring...");
+        return;
+      }
+      
       console.log("[cue] 🎤 Wake up call detected! Opening chat and starting transcription...");
       
       // Only activate if not already recording a session or live streaming

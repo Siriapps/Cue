@@ -465,6 +465,23 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return;
   }
 
+  // Check if a specific tab is active
+  if (message.type === "CHECK_ACTIVE_TAB") {
+    chrome.tabs.query({ active: true, currentWindow: true }).then(([activeTab]) => {
+      chrome.tabs.getCurrent().then((currentTab) => {
+        sendResponse({ isActive: activeTab?.id === currentTab?.id });
+      }).catch(() => {
+        // If getCurrent fails (content script context), check by URL
+        if (message.tabId) {
+          sendResponse({ isActive: activeTab?.id === message.tabId });
+        } else {
+          sendResponse({ isActive: false });
+        }
+      });
+    });
+    return true; // Indicates async response
+  }
+
   // Library
   if (message.type === "OPEN_LIBRARY") {
     try {

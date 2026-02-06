@@ -90,6 +90,11 @@ export function useWakeWord(options: UseWakeWordOptions = {}) {
     useEffect(() => {
         const handleMessage = (message: any) => {
             if (message.type === 'WAKE_WORD_DETECTED') {
+                // Check if this tab is active before responding
+                if (!document.hasFocus()) {
+                    return;
+                }
+                
                 if (onWakeWordDetectedRef.current) {
                     onWakeWordDetectedRef.current();
                 }
@@ -193,17 +198,29 @@ export function useWakeWord(options: UseWakeWordOptions = {}) {
                     console.log('[cue] ✅ WAKE UP CALL DETECTED!');
                     wakeWordDetectedRef.current = true;
                     
-                    // Stop recognition
-                    try {
-                        recognition.stop();
-                    } catch (e) {
-                        // Ignore errors
+                    // Check if this tab is active before responding
+                    if (!document.hasFocus()) {
+                        console.log('[cue] Wake word detected but this tab is not active, ignoring...');
+                        return;
                     }
                     
-                    // Notify callback
-                    if (onWakeWordDetectedRef.current) {
-                        onWakeWordDetectedRef.current();
-                    }
+                // Check if this tab is active before responding
+                if (!document.hasFocus()) {
+                    console.log('[cue] Wake word detected but this tab is not active, ignoring...');
+                    return;
+                }
+                
+                // Stop recognition
+                try {
+                    recognition.stop();
+                } catch (e) {
+                    // Ignore errors
+                }
+                
+                // Notify callback
+                if (onWakeWordDetectedRef.current) {
+                    onWakeWordDetectedRef.current();
+                }
                     return;
                 }
             }
