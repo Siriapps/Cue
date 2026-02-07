@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { config } from '../config';
+import cueLogo from '../logo.png';
 
 /**
  * DashboardHalo - Top bar for the dashboard matching the extension halo strip style
@@ -58,17 +59,7 @@ function DashboardHalo({ user }) {
       {/* Logo and Brand */}
       <div className="halo-brand">
         <div className="halo-logo">
-          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <circle cx="12" cy="12" r="10" fill="url(#dashLogoGrad)" />
-            <path d="M8 12C8 9.79 9.79 8 12 8C14.21 8 16 9.79 16 12" stroke="white" strokeWidth="2" strokeLinecap="round"/>
-            <circle cx="12" cy="14" r="2" fill="white"/>
-            <defs>
-              <linearGradient id="dashLogoGrad" x1="2" y1="2" x2="22" y2="22">
-                <stop stopColor="#6366f1"/>
-                <stop offset="1" stopColor="#8b5cf6"/>
-              </linearGradient>
-            </defs>
-          </svg>
+          <img src={cueLogo} alt="cue" className="cue-logo-img" />
         </div>
         <span className="halo-brand-text">cue</span>
       </div>

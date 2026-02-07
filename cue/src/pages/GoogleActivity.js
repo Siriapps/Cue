@@ -3,6 +3,7 @@ import { config } from '../config';
 import { getStoredToken } from '../auth/googleAuth';
 
 const ADK_API_URL = config.API_BASE_URL;
+const WS_URL = ADK_API_URL ? (ADK_API_URL.replace(/^http/, 'ws').replace(/\/$/, '') + '/ws/dashboard') : '';
 
 // Service-specific URLs for completed tasks
 const SERVICE_URLS = {
@@ -29,7 +30,12 @@ function GoogleActivity({ lastActivityUpdate = 0, user }) {
   const [completedTasks, setCompletedTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [acceptErrorToast, setAcceptErrorToast] = useState(null);
   const [acceptingId, setAcceptingId] = useState(null);
+
+  // Edit modal state
+  const [editingTask, setEditingTask] = useState(null);
+  const [editFormData, setEditFormData] = useState({});
 
   const fetchAll = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -42,11 +48,11 @@ function GoogleActivity({ lastActivityUpdate = 0, user }) {
       ]);
       const activitiesData = actRes.ok ? (await actRes.json()).activities || [] : [];
       const pendingData = pendingRes.ok ? (await pendingRes.json()).tasks || [] : [];
-      const queueData = queueRes.ok ? (await queueRes.json()).tasks || [] : [];
+      const inProgressData = queueRes.ok ? (await queueRes.json()).tasks || [] : [];
       const completedData = completedRes.ok ? (await completedRes.json()).tasks || [] : [];
       setActivities(activitiesData);
-      setInProgressTasks(pendingData);
-      setQueueTasks(queueData);
+      setQueueTasks(pendingData);
+      setInProgressTasks(inProgressData);
       setCompletedTasks(completedData);
       setError(null);
     } catch (e) {
@@ -78,6 +84,39 @@ function GoogleActivity({ lastActivityUpdate = 0, user }) {
     return () => document.removeEventListener('visibilitychange', onVisibility);
   }, [fetchAll]);
 
+  // WebSocket: sync task columns when backend broadcasts TASKS_UPDATED
+  useEffect(() => {
+    if (!WS_URL) return;
+    let ws = null;
+    let reconnectTimeout = null;
+    const connect = () => {
+      try {
+        ws = new WebSocket(WS_URL);
+        ws.onopen = () => {};
+        ws.onmessage = (event) => {
+          try {
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'TASKS_UPDATED' && Array.isArray(msg.tasks)) {
+              const tasks = msg.tasks;
+              setQueueTasks(tasks.filter((t) => (t.status || '') === 'pending'));
+              setInProgressTasks(tasks.filter((t) => (t.status || '') === 'in_progress'));
+              setCompletedTasks(tasks.filter((t) => (t.status || '') === 'completed'));
+            }
+          } catch (e) {}
+        };
+        ws.onclose = () => {
+          reconnectTimeout = setTimeout(connect, 5000);
+        };
+        ws.onerror = () => {};
+      } catch (e) {}
+    };
+    connect();
+    return () => {
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      if (ws) ws.close();
+    };
+  }, []);
+
   const handleAccept = async (task) => {
     const taskId = task._id;
     const token = getStoredToken();
@@ -92,8 +131,8 @@ function GoogleActivity({ lastActivityUpdate = 0, user }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'in_progress' }),
       });
-      setInProgressTasks((prev) => prev.filter((t) => t._id !== taskId));
-      setQueueTasks((prev) => [...prev, { ...task, status: 'in_progress' }]);
+      setQueueTasks((prev) => prev.filter((t) => t._id !== taskId));
+      setInProgressTasks((prev) => [...prev, { ...task, status: 'in_progress' }]);
 
       const service = (task.service || 'gmail').toLowerCase();
       const command = task.description || task.title || '';
@@ -105,27 +144,36 @@ function GoogleActivity({ lastActivityUpdate = 0, user }) {
           command,
           user_token: token,
           confirm: true,
+          suggested_params: task.params || {},
           user_display_name: user?.name || '',
           user_email: user?.email || '',
         }),
       });
       const result = await execRes.json();
 
-      if (result.success && result.open_url) {
-        window.open(result.open_url, '_blank');
+      if (result.success) {
+        if (result.open_url) {
+          window.open(result.open_url, '_blank');
+        }
+        await fetch(`${ADK_API_URL}/suggested_tasks/${taskId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'completed', open_url: result?.open_url || '' }),
+        });
+        setInProgressTasks((prev) => prev.filter((t) => t._id !== taskId));
+        setCompletedTasks((prev) => [{ ...task, status: 'completed', open_url: result?.open_url }, ...prev]);
+      } else {
+        // Execution failed (API error, quota, etc.) — keep in AI Queue
+        console.warn('[GoogleActivity] Task execution failed:', result.error);
+        setError(`Task couldn't be executed: ${result.error || 'API error'}. It's in the AI Queue for retry.`);
+        setTimeout(() => setError(null), 5000);
       }
-      await fetch(`${ADK_API_URL}/suggested_tasks/${taskId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'completed' }),
-      });
-      setQueueTasks((prev) => prev.filter((t) => t._id !== taskId));
-      setCompletedTasks((prev) => [{ ...task, status: 'completed' }, ...prev]);
       fetchAll(true);
     } catch (err) {
       console.error('[GoogleActivity] accept error:', err);
-      setQueueTasks((prev) => prev.filter((t) => t._id !== taskId));
-      setInProgressTasks((prev) => [...prev, task]);
+      // Keep task in AI Queue (in_progress), don't move back to pending
+      setError('Action couldn\'t be completed. Task is in the AI Queue for retry.');
+      setTimeout(() => setError(null), 5000);
       fetchAll(true);
     } finally {
       setAcceptingId(null);
@@ -139,10 +187,66 @@ function GoogleActivity({ lastActivityUpdate = 0, user }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'dismissed' }),
       });
+      setQueueTasks((prev) => prev.filter((t) => t._id !== taskId));
       setInProgressTasks((prev) => prev.filter((t) => t._id !== taskId));
+      fetchAll(true);
     } catch (err) {
       console.error('[GoogleActivity] dismiss error:', err);
     }
+  };
+
+  // Edit task handlers
+  const handleEditTask = (task) => {
+    setEditingTask(task);
+    const params = task.params || {};
+    setEditFormData({
+      to: params.to || '',
+      subject: params.subject || '',
+      body: params.body || params.message || '',
+      title: params.title || params.summary || task.title || '',
+      date: params.date || '',
+      time: params.time || params.start || '',
+      description: params.description || task.description || '',
+    });
+  };
+
+  const handleEditFormChange = (field, value) => {
+    setEditFormData((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const handleEditCancel = () => {
+    setEditingTask(null);
+    setEditFormData({});
+  };
+
+  const handleEditSubmit = async () => {
+    if (!editingTask) return;
+
+    // Build updated params based on service type
+    const updatedParams = { ...(editingTask.params || {}) };
+
+    if (editingTask.service === 'gmail') {
+      if (editFormData.to) updatedParams.to = editFormData.to;
+      if (editFormData.subject) updatedParams.subject = editFormData.subject;
+      if (editFormData.body) updatedParams.body = editFormData.body;
+    } else if (editingTask.service === 'calendar') {
+      if (editFormData.title) updatedParams.summary = editFormData.title;
+      if (editFormData.date) updatedParams.date = editFormData.date;
+      if (editFormData.time) updatedParams.start = editFormData.time;
+      if (editFormData.description) updatedParams.description = editFormData.description;
+    } else if (editingTask.service === 'tasks') {
+      if (editFormData.title) updatedParams.title = editFormData.title;
+      if (editFormData.description) updatedParams.notes = editFormData.description;
+    } else {
+      // Generic: update description/prompt
+      if (editFormData.description) updatedParams.prompt = editFormData.description;
+    }
+
+    // Execute the task with updated params
+    const updatedTask = { ...editingTask, params: updatedParams };
+    setEditingTask(null);
+    setEditFormData({});
+    await handleAccept(updatedTask);
   };
 
   const filteredActivities = activities.filter(
@@ -263,6 +367,11 @@ function GoogleActivity({ lastActivityUpdate = 0, user }) {
 
   return (
     <div className="sessions-container ai-task-automation ai-task-board-panel">
+      {acceptErrorToast && (
+        <div className="ai-task-toast error" role="alert">
+          {acceptErrorToast}
+        </div>
+      )}
       <div className="ai-task-header">
         <div className="google-activity-cards">
           <div className="google-activity-card">
@@ -303,23 +412,6 @@ function GoogleActivity({ lastActivityUpdate = 0, user }) {
               queueTasks.map((task) => (
                 <div key={task._id} className="ai-task-card queue-card glass-card glow-border">
                   <h4 className="ai-task-card-title">{task.title || task.description || 'Task'}</h4>
-                  <p className="ai-task-card-subtitle">Processing…</p>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-
-        <div className="ai-task-column in-progress-column">
-          <h3 className="ai-column-title">In Progress (User Review)</h3>
-          <span className="ai-column-subtitle">{inProgressTasks.length} Queue</span>
-          <div className="ai-column-cards">
-            {inProgressTasks.length === 0 ? (
-              <p className="empty-column">No tasks awaiting review.</p>
-            ) : (
-              inProgressTasks.map((task) => (
-                <div key={task._id} className="ai-task-card in-progress-card glass-card">
-                  <h4 className="ai-task-card-title">{task.title || task.description || 'Task'}</h4>
                   <p className="ai-task-card-subtitle">{task.service || 'general'}</p>
                   <div className="ai-task-card-actions">
                     <button
@@ -333,7 +425,10 @@ function GoogleActivity({ lastActivityUpdate = 0, user }) {
                     <button
                       type="button"
                       className="task-btn edit"
-                      onClick={(e) => { e.stopPropagation(); }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleEditTask(task);
+                      }}
                       title="Edit task"
                     >
                       Edit
@@ -346,6 +441,24 @@ function GoogleActivity({ lastActivityUpdate = 0, user }) {
                       Dismiss
                     </button>
                   </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        <div className="ai-task-column in-progress-column">
+          <h3 className="ai-column-title">AI Queue (Retry)</h3>
+          <span className="ai-column-subtitle">{inProgressTasks.length} queued</span>
+          <div className="ai-column-cards">
+            {inProgressTasks.length === 0 ? (
+              <p className="empty-column">No tasks awaiting review.</p>
+            ) : (
+              inProgressTasks.map((task) => (
+                <div key={task._id} className="ai-task-card in-progress-card glass-card">
+                  <h4 className="ai-task-card-title">{task.title || task.description || 'Task'}</h4>
+                  <p className="ai-task-card-subtitle">{task.service || 'general'}</p>
+                  <p className="ai-task-card-status">Executing…</p>
                 </div>
               ))
             )}
@@ -393,6 +506,145 @@ function GoogleActivity({ lastActivityUpdate = 0, user }) {
           </div>
         </div>
       </div>
+
+      {/* Edit Task Modal */}
+      {editingTask && (
+        <div className="edit-modal-overlay" onClick={handleEditCancel}>
+          <div className="edit-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="edit-modal-header">
+              <h3>Edit Task</h3>
+              <button className="edit-modal-close" onClick={handleEditCancel}>×</button>
+            </div>
+            <div className="edit-modal-body">
+              <h4 className="edit-modal-task-title">{editingTask.title}</h4>
+
+              {/* Gmail-specific fields */}
+              {editingTask.service === 'gmail' && (
+                <>
+                  <label className="edit-modal-label">
+                    To:
+                    <input
+                      type="email"
+                      value={editFormData.to || ''}
+                      onChange={(e) => handleEditFormChange('to', e.target.value)}
+                      placeholder="recipient@example.com"
+                      className="edit-modal-input"
+                    />
+                  </label>
+                  <label className="edit-modal-label">
+                    Subject:
+                    <input
+                      type="text"
+                      value={editFormData.subject || ''}
+                      onChange={(e) => handleEditFormChange('subject', e.target.value)}
+                      placeholder="Email subject"
+                      className="edit-modal-input"
+                    />
+                  </label>
+                  <label className="edit-modal-label">
+                    Message:
+                    <textarea
+                      value={editFormData.body || ''}
+                      onChange={(e) => handleEditFormChange('body', e.target.value)}
+                      placeholder="Email body"
+                      className="edit-modal-textarea"
+                      rows={4}
+                    />
+                  </label>
+                </>
+              )}
+
+              {/* Calendar-specific fields */}
+              {editingTask.service === 'calendar' && (
+                <>
+                  <label className="edit-modal-label">
+                    Event Title:
+                    <input
+                      type="text"
+                      value={editFormData.title || ''}
+                      onChange={(e) => handleEditFormChange('title', e.target.value)}
+                      placeholder="Meeting title"
+                      className="edit-modal-input"
+                    />
+                  </label>
+                  <label className="edit-modal-label">
+                    Date:
+                    <input
+                      type="date"
+                      value={editFormData.date || ''}
+                      onChange={(e) => handleEditFormChange('date', e.target.value)}
+                      className="edit-modal-input"
+                    />
+                  </label>
+                  <label className="edit-modal-label">
+                    Time:
+                    <input
+                      type="time"
+                      value={editFormData.time || ''}
+                      onChange={(e) => handleEditFormChange('time', e.target.value)}
+                      className="edit-modal-input"
+                    />
+                  </label>
+                  <label className="edit-modal-label">
+                    Description:
+                    <textarea
+                      value={editFormData.description || ''}
+                      onChange={(e) => handleEditFormChange('description', e.target.value)}
+                      placeholder="Event description"
+                      className="edit-modal-textarea"
+                      rows={3}
+                    />
+                  </label>
+                </>
+              )}
+
+              {/* Tasks-specific fields */}
+              {editingTask.service === 'tasks' && (
+                <>
+                  <label className="edit-modal-label">
+                    Task Title:
+                    <input
+                      type="text"
+                      value={editFormData.title || ''}
+                      onChange={(e) => handleEditFormChange('title', e.target.value)}
+                      placeholder="Task title"
+                      className="edit-modal-input"
+                    />
+                  </label>
+                  <label className="edit-modal-label">
+                    Notes:
+                    <textarea
+                      value={editFormData.description || ''}
+                      onChange={(e) => handleEditFormChange('description', e.target.value)}
+                      placeholder="Task notes"
+                      className="edit-modal-textarea"
+                      rows={3}
+                    />
+                  </label>
+                </>
+              )}
+
+              {/* Generic/AI chat fields */}
+              {(!editingTask.service || !['gmail', 'calendar', 'tasks'].includes(editingTask.service)) && (
+                <label className="edit-modal-label">
+                  Prompt/Description:
+                  <textarea
+                    value={editFormData.description || ''}
+                    onChange={(e) => handleEditFormChange('description', e.target.value)}
+                    placeholder="Edit the prompt or description"
+                    className="edit-modal-textarea"
+                    rows={5}
+                  />
+                </label>
+              )}
+            </div>
+            <div className="edit-modal-footer">
+              <button className="edit-modal-cancel" onClick={handleEditCancel}>Cancel</button>
+              <button className="edit-modal-submit" onClick={handleEditSubmit}>Execute</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

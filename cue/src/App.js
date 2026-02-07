@@ -19,7 +19,7 @@ import MosaicField from './pages/MosaicField';
 import DashboardLayout from './layouts/DashboardLayout';
 
 // Auth
-import { getStoredUser, storeAuth, handleOAuthRedirect } from './auth/googleAuth';
+import { getStoredUser, storeAuth, clearAuth, handleOAuthRedirect } from './auth/googleAuth';
 
 // Config
 import { config } from './config';
@@ -457,6 +457,13 @@ function App() {
     navigate('/library');
   };
 
+  const handleLogout = () => {
+    clearAuth();
+    setUser(null);
+    setIsAuthenticated(false);
+    navigate('/', { replace: true });
+  };
+
   // Protected route wrapper
   const ProtectedRoute = ({ children }) => {
     if (!isAuthenticated) {
@@ -468,6 +475,7 @@ function App() {
         searchQuery={searchQuery}
         setSearchQuery={setSearchQuery}
         dashboardConnected={dashboardConnected}
+        onLogout={handleLogout}
       >
         {children}
       </DashboardLayout>

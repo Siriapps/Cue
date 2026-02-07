@@ -242,10 +242,12 @@ class SuggestTasksRequest(BaseModel):
     context_blob: Optional[str] = None
     page_title: Optional[str] = None
     current_url: Optional[str] = None
+    trajectory: Optional[List[Dict[str, Any]]] = None
 
 
 class UpdateTaskRequest(BaseModel):
     status: Optional[str] = None  # pending, completed, dismissed
+    open_url: Optional[str] = None
 
 
 class ExecuteSuggestedTaskRequest(BaseModel):
@@ -454,9 +456,38 @@ async def suggest_tasks_endpoint(payload: SuggestTasksRequest) -> Dict[str, Any]
     except Exception as e:
         print(f"[cue] Error fetching Google activity for suggest_tasks: {e}")
 
-    # Section 4: Current page
+    # Section 4: Last completed task (for generating relevant follow-up tasks)
+    try:
+        last_completed = list_suggested_tasks(limit=1, status="completed")
+        if last_completed:
+            task = last_completed[0]
+            title = task.get("title", "Unknown task")
+            service = task.get("service", "N/A")
+            action = task.get("action", "N/A")
+            desc = task.get("description", "")[:200]
+            context_sections.append(
+                f"## User Just Completed This Task\n"
+                f"- Title: {title}\n"
+                f"- Service: {service}, Action: {action}\n"
+                f"- Description: {desc}\n"
+                f"Consider suggesting logical next steps based on this completed task."
+            )
+    except Exception as e:
+        print(f"[cue] Error fetching last completed task: {e}")
+
+    # Section 5: Current page
     if page_title or current_url:
         context_sections.append(f"## Current Page\nTitle: {page_title}\nURL: {current_url}")
+
+    # Section 6: Browsing Trajectory
+    if payload.trajectory:
+        traj_lines = []
+        for entry in payload.trajectory[-10:]:
+            traj_lines.append(f"- {entry.get('title', 'Page')} ({entry.get('url', '')})")
+        if traj_lines:
+            context_sections.append(
+                "## Recent Browsing Path\n" + "\n".join(traj_lines)
+            )
 
     full_context = "\n\n".join(context_sections)
 
@@ -546,6 +577,12 @@ Return ONLY the JSON array, no markdown or explanation."""
                 # Fallback: create single informational task
                 tasks = [{"title": "Suggestion", "description": raw_text[:500], "service": None, "action": None, "params": None}]
 
+        # Cap new tasks: at most 5 active (pending + in_progress) total; only add slots available
+        all_active = list_suggested_tasks(limit=50, status="pending") + list_suggested_tasks(limit=50, status="in_progress")
+        active_count = len(all_active)
+        slots = max(0, 5 - active_count)
+        tasks = tasks[:slots] if slots else []
+
         # Validate and save tasks to MongoDB
         saved_tasks = []
         for task in tasks:
@@ -595,6 +632,8 @@ async def update_task_endpoint(task_id: str, payload: UpdateTaskRequest) -> Dict
         if payload.status not in ["pending", "in_progress", "completed", "dismissed"]:
             return {"success": False, "error": "Invalid status. Must be: pending, in_progress, completed, or dismissed"}
         updates["status"] = payload.status
+    if payload.open_url:
+        updates["open_url"] = payload.open_url
 
     if not updates:
         return {"success": False, "error": "No updates provided"}
@@ -1000,7 +1039,7 @@ async def get_google_activity(user_id: str = "", limit: int = 100) -> Dict[str, 
 
 # ================== MOSAIC COMMS (Gmail unread, Gemini summary, Calendar upcoming) ==================
 
-_mosaic_comms_cache: Dict[str, tuple] = {}  # cache_key -> (gmail_summary, expiry_timestamp)
+_mosaic_comms_cache: Dict[str, tuple] = {}  # cache_key -> (gmail_summary, what_to_do, expiry_timestamp)
 MOSAIC_CACHE_TTL_SECONDS = 600  # 10 minutes
 
 
@@ -1035,6 +1074,7 @@ async def mosaic_comms(payload: MosaicCommsRequest) -> Dict[str, Any]:
 
     gmail_unread_count = 0
     gmail_summary: Optional[str] = None
+    what_to_do: Optional[str] = None
     calendar_upcoming: List[Dict[str, Any]] = []
 
     try:
@@ -1050,9 +1090,10 @@ async def mosaic_comms(payload: MosaicCommsRequest) -> Dict[str, Any]:
     cache_key = _mosaic_cache_key(user_token)
     now_ts = datetime.utcnow().timestamp()
     if cache_key in _mosaic_comms_cache:
-        cached_summary, expiry = _mosaic_comms_cache[cache_key]
+        cached_summary, cached_what_to_do, expiry = _mosaic_comms_cache[cache_key]
         if now_ts < expiry:
             gmail_summary = cached_summary
+            what_to_do = cached_what_to_do
 
     if gmail_summary is None:
         try:
@@ -1074,16 +1115,54 @@ async def mosaic_comms(payload: MosaicCommsRequest) -> Dict[str, Any]:
                 text = result.get("raw_text") or result.get("error") or ""
                 if text and "error" not in text.lower():
                     gmail_summary = text.strip()
-                    _mosaic_comms_cache[cache_key] = (gmail_summary, now_ts + MOSAIC_CACHE_TTL_SECONDS)
             else:
                 gmail_summary = "No recent emails to summarize."
         except Exception as e:
             gmail_summary = None
             print(f"[cue] mosaic/comms Gemini summary error: {e}")
 
+    if what_to_do is None and (gmail_summary or gmail_unread_count or calendar_upcoming):
+        try:
+            snippets = gmail_server.get_recent_email_snippets(user_token, max_results=15)
+            context_parts = []
+            if gmail_summary:
+                context_parts.append(f"Important from today: {gmail_summary[:2000]}")
+            if snippets:
+                blob = "\n\n".join(
+                    f"Subject: {s.get('subject', '')}\nSnippet: {s.get('snippet', '')}"
+                    for s in snippets[:10]
+                )
+                context_parts.append("Recent emails:\n" + blob[:6000])
+            if calendar_upcoming:
+                events_str = "\n".join(
+                    f"- {e.get('summary', 'Event')} at {e.get('start', {}).get('dateTime', e.get('start', {}).get('date', ''))}"
+                    for e in calendar_upcoming[:5]
+                )
+                context_parts.append("Upcoming events:\n" + events_str)
+            if context_parts:
+                prompt = (
+                    "Based on this user context (emails and calendar), answer in 1–3 short sentences: "
+                    "Is any mail important? What should the user do next? Be concise and actionable.\n\n"
+                    + "\n\n".join(context_parts)
+                )
+                result = call_gemini(
+                    parts=[{"text": prompt}],
+                    response_mime_type="text/plain",
+                )
+                text = result.get("raw_text") or result.get("error") or ""
+                if text and "error" not in text.lower():
+                    what_to_do = text.strip()
+        except Exception as e:
+            print(f"[cue] mosaic/comms what_to_do error: {e}")
+
+    # Cache both gmail_summary and what_to_do together
+    if gmail_summary or what_to_do:
+        _mosaic_comms_cache[cache_key] = (gmail_summary, what_to_do, now_ts + MOSAIC_CACHE_TTL_SECONDS)
+
     return {
         "gmail_unread_count": gmail_unread_count,
         "gmail_summary": gmail_summary,
+        "what_to_do": what_to_do,
         "calendar_upcoming": calendar_upcoming,
     }
 
@@ -1101,6 +1180,7 @@ class CommandRequest(BaseModel):
     selected_text: Optional[str] = None
     user_display_name: Optional[str] = None
     user_email: Optional[str] = None
+    suggested_params: Optional[Dict[str, Any]] = None  # Pre-built params from task suggestions (skip Gemini)
 
 
 @app.post("/execute_command")
@@ -1127,34 +1207,62 @@ async def execute_command(payload: CommandRequest) -> Dict[str, Any]:
             "error": f"Unknown service: @{service}. Supported: {', '.join(['@' + s for s in supported_services])}"
         }
 
-    # Build context and recent activity for single agent-style prompt
-    page_title = payload.page_title or ""
-    current_url = payload.current_url or ""
-    selected_text = (payload.selected_text or "")[:500]
-    user_display_name = payload.user_display_name or ""
-    user_email = payload.user_email or ""
-    recent_activity_lines: List[str] = []
-    try:
-        activities = list_google_activity_recent(limit=10)
-        for a in activities[:10]:
-            s = a.get("service", "")
-            act = a.get("action", "")
-            det = a.get("details", {}) or {}
-            if s == "gmail" and act == "send_email":
-                recent_activity_lines.append(f"sent email: {det.get('subject', 'email')}")
-            elif s == "docs" and act == "create_document":
-                recent_activity_lines.append(f"created doc: {det.get('title', 'doc')}")
-            elif s == "calendar" and act == "create_event":
-                recent_activity_lines.append(f"created event: {det.get('summary', 'event')}")
-            elif s == "tasks" and act == "create_task":
-                recent_activity_lines.append(f"created task: {det.get('title', 'task')}")
-            else:
-                recent_activity_lines.append(f"{s} {act}")
-    except Exception:
-        pass
-    recent_activity_str = "; ".join(recent_activity_lines) if recent_activity_lines else "none"
+    user_token = payload.user_token
+    confirm = payload.confirm
+    action = None
+    params = {}
 
-    agent_prompt = f"""You are a smart, productive AI agent. The user is invoking a Google {service} command. Use the context below to decide exactly what to do and produce a complete, ready-to-use result.
+    # SHORTCUT: If suggested_params are provided (from task suggestions), skip Gemini parsing entirely
+    if payload.suggested_params and isinstance(payload.suggested_params, dict):
+        params = dict(payload.suggested_params)
+        # Infer action from command string first word
+        cmd_words = command.lower().split() if command else []
+        first_word = cmd_words[0] if cmd_words else "draft"
+        QUICK_ALIASES = {
+            "gmail": {"generate": "draft", "create": "draft", "compose": "draft", "write": "draft", "make": "draft", "send": "send", "draft": "draft"},
+            "calendar": {"schedule": "create", "add": "create", "book": "create", "make": "create", "create": "create"},
+            "tasks": {"create": "add", "new": "add", "make": "add", "add": "add"},
+            "docs": {"generate": "create", "new": "create", "write": "create", "make": "create", "create": "create"},
+            "sheets": {"generate": "create", "new": "create", "make": "create", "create": "create"},
+            "drive": {"list": "list", "find": "find", "create": "create"},
+        }
+        if service in QUICK_ALIASES and first_word in QUICK_ALIASES[service]:
+            action = QUICK_ALIASES[service][first_word]
+        elif first_word in ["draft", "send", "list", "read", "create", "delete", "add", "complete", "find"]:
+            action = first_word
+        else:
+            action = "draft" if service == "gmail" else "create"
+        print(f"[cue] Using pre-built params (skipping Gemini): service={service}, action={action}, params={list(params.keys())}")
+
+    # Only call Gemini to parse if we don't have pre-built params
+    if action is None:
+        page_title = payload.page_title or ""
+        current_url = payload.current_url or ""
+        selected_text = (payload.selected_text or "")[:500]
+        user_display_name = payload.user_display_name or ""
+        user_email = payload.user_email or ""
+        recent_activity_lines: List[str] = []
+        try:
+            activities = list_google_activity_recent(limit=10)
+            for a in activities[:10]:
+                s = a.get("service", "")
+                act = a.get("action", "")
+                det = a.get("details", {}) or {}
+                if s == "gmail" and act == "send_email":
+                    recent_activity_lines.append(f"sent email: {det.get('subject', 'email')}")
+                elif s == "docs" and act == "create_document":
+                    recent_activity_lines.append(f"created doc: {det.get('title', 'doc')}")
+                elif s == "calendar" and act == "create_event":
+                    recent_activity_lines.append(f"created event: {det.get('summary', 'event')}")
+                elif s == "tasks" and act == "create_task":
+                    recent_activity_lines.append(f"created task: {det.get('title', 'task')}")
+                else:
+                    recent_activity_lines.append(f"{s} {act}")
+        except Exception:
+            pass
+        recent_activity_str = "; ".join(recent_activity_lines) if recent_activity_lines else "none"
+
+        agent_prompt = f"""You are a smart, productive AI agent. The user is invoking a Google {service} command. Use the context below to decide exactly what to do and produce a complete, ready-to-use result.
 
 Context:
 - Page: {page_title or 'unknown'}
@@ -1177,47 +1285,47 @@ For Calendar "create": params must include "title" (or "summary"), "description"
 
 Return ONLY the JSON object, no markdown or explanation."""
 
-    try:
-        import json
-        import re
+        try:
+            import json
+            import re
 
-        agent_result = call_gemini(
-            parts=[{"text": agent_prompt}],
-            response_mime_type="application/json",
-        )
-        if isinstance(agent_result, dict) and "error" in agent_result:
-            raise ValueError(agent_result["error"])
-        if isinstance(agent_result, dict):
-            parsed = agent_result
-        else:
-            raw = getattr(agent_result, "raw_text", None) or str(agent_result)
-            json_match = re.search(r'\{[\s\S]*\}', raw)
-            parsed = json.loads(json_match.group()) if json_match else {}
-        action = parsed.get("action", "unknown")
-        params = parsed.get("params", {})
-        if not isinstance(params, dict):
-            params = {}
-    except Exception as parse_err:
-        print(f"[cue] Command agent error: {parse_err}")
-        return {
-            "success": False,
-            "error": f"Could not interpret command: {parse_err}",
-            "hint": "Try being more specific, e.g., '@gmail draft email to user@example.com subject Hello'"
+            agent_result = call_gemini(
+                parts=[{"text": agent_prompt}],
+                response_mime_type="application/json",
+            )
+            if isinstance(agent_result, dict) and "error" in agent_result:
+                raise ValueError(agent_result["error"])
+            if isinstance(agent_result, dict):
+                parsed = agent_result
+            else:
+                raw = getattr(agent_result, "raw_text", None) or str(agent_result)
+                json_match = re.search(r'\{[\s\S]*\}', raw)
+                parsed = json.loads(json_match.group()) if json_match else {}
+            action = parsed.get("action", "unknown")
+            params = parsed.get("params", {})
+            if not isinstance(params, dict):
+                params = {}
+        except Exception as parse_err:
+            print(f"[cue] Command agent error: {parse_err}")
+            return {
+                "success": False,
+                "error": f"Could not interpret command: {parse_err}",
+                "hint": "Try being more specific, e.g., '@gmail draft email to user@example.com subject Hello'"
+            }
+
+        # Normalize action aliases - map common variations to expected actions
+        ACTION_ALIASES = {
+            "gmail": {"generate": "draft", "create": "draft", "compose": "draft", "write": "draft", "make": "draft"},
+            "calendar": {"schedule": "create", "add": "create", "book": "create", "make": "create"},
+            "tasks": {"create": "add", "new": "add", "make": "add"},
+            "docs": {"generate": "create", "new": "create", "write": "create", "make": "create"},
+            "sheets": {"generate": "create", "new": "create", "make": "create"},
+            "drive": {"generate": "create", "new": "create", "make": "create"},
         }
-
-    # Normalize action aliases - map common variations to expected actions
-    ACTION_ALIASES = {
-        "gmail": {"generate": "draft", "create": "draft", "compose": "draft", "write": "draft", "make": "draft"},
-        "calendar": {"schedule": "create", "add": "create", "book": "create", "make": "create"},
-        "tasks": {"create": "add", "new": "add", "make": "add"},
-        "docs": {"generate": "create", "new": "create", "write": "create", "make": "create"},
-        "sheets": {"generate": "create", "new": "create", "make": "create"},
-        "drive": {"generate": "create", "new": "create", "make": "create"},
-    }
-    if service in ACTION_ALIASES and action in ACTION_ALIASES[service]:
-        original_action = action
-        action = ACTION_ALIASES[service][action]
-        print(f"[cue] Normalized action: {original_action} -> {action} for {service}")
+        if service in ACTION_ALIASES and action in ACTION_ALIASES[service]:
+            original_action = action
+            action = ACTION_ALIASES[service][action]
+            print(f"[cue] Normalized action: {original_action} -> {action} for {service}")
 
     # Ensure required fields have fallbacks for preview/execute
     if service == "gmail" and action == "draft":
@@ -1334,6 +1442,9 @@ Return ONLY the JSON object, no markdown or explanation."""
                     body=(params.get("body", "") or "").strip(),
                 )
                 result = wrap_mcp_result(mcp_result, "Draft created", "draft_id")
+                # Add Gmail draft URL for opening in browser
+                if result.get("success") and result.get("draft_id"):
+                    result["open_url"] = f"https://mail.google.com/mail/u/0/#drafts?compose={result['draft_id']}"
             elif action == "send":
                 mcp_result = gmail_server.send_email(
                     user_token=user_token,
@@ -1658,7 +1769,7 @@ async def websocket_extension(websocket: WebSocket) -> None:
         # Send current suggested tasks on connect
         try:
             tasks = list_suggested_tasks(limit=50)
-            pending_tasks = [t for t in tasks if t.get("status") != "completed"][:5]
+            pending_tasks = [serialize_doc(t) for t in tasks if t.get("status") != "completed"][:5]
             if pending_tasks:
                 await websocket.send_json({
                     "type": "SYNCED_TASKS",
@@ -1678,7 +1789,7 @@ async def websocket_extension(websocket: WebSocket) -> None:
                 # Extension requests current tasks
                 try:
                     tasks = list_suggested_tasks(limit=50)
-                    pending_tasks = [t for t in tasks if t.get("status") != "completed"][:5]
+                    pending_tasks = [serialize_doc(t) for t in tasks if t.get("status") != "completed"][:5]
                     await websocket.send_json({
                         "type": "SYNCED_TASKS",
                         "tasks": pending_tasks,

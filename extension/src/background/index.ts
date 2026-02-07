@@ -164,6 +164,12 @@ chrome.history.onVisited.addListener(async (item) => {
     engine: inferSearchEngine(item.url),
     visitedAt: item.lastVisitTime ?? Date.now(),
   });
+  // If the search result is in the active tab, start a 10s dwell timer
+  chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
+    if (tab?.id && tab.url && tab.url === item.url) {
+      startPageDwellTimer(tab.id, tab.url);
+    }
+  });
   // Check for context change after search (triggers if category changed + cooldown elapsed)
   checkContextAndTrigger(item.url, "search_query");
 });
@@ -239,12 +245,20 @@ let lockoutStartTime = 0;
 // Timing constants
 const AUTO_SUGGEST_COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown after user interaction
 const LOCKOUT_DURATION_MS = 5 * 60 * 1000; // 5 minutes lockout if same topic
-const PAGE_DWELL_TIME_MS = 60000; // 1 minute on page can also trigger
+const PAGE_DWELL_TIME_MS = 10000; // 10 seconds on page can trigger
 const MAX_SUGGESTIONS_PER_BATCH = 5; // Show max 5 tasks per suggestion
 
 // Session task limit - max 50 tasks per session, decrement when user accepts
 let sessionTaskCount = 0;
 const MAX_SESSION_TASKS = 50;
+
+// Active task gating - don't generate new tasks while user has pending ones
+let activeTaskCount = 0;
+const MAX_ACTIVE_TASKS = 5;
+
+// Global cooldown: prevent ANY suggest_tasks call within 30s of the last one
+let lastGlobalSuggestTime = 0;
+const GLOBAL_SUGGEST_COOLDOWN_MS = 30_000;
 
 // Per-tab timers for page dwell time
 const pageDwellTimers: Record<number, ReturnType<typeof setTimeout>> = {};
@@ -542,11 +556,27 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 async function triggerAutoSuggest(trigger: string) {
+  // Global cooldown: no suggest_tasks call within 30s of last one
+  const now = Date.now();
+  if (now - lastGlobalSuggestTime < GLOBAL_SUGGEST_COOLDOWN_MS) {
+    console.log(`[cue] Skipping auto-suggest (${trigger}): global cooldown (${Math.round((GLOBAL_SUGGEST_COOLDOWN_MS - (now - lastGlobalSuggestTime)) / 1000)}s left)`);
+    return;
+  }
+
+  // Don't generate new tasks if user still has pending active tasks
+  if (activeTaskCount >= MAX_ACTIVE_TASKS) {
+    console.log("[cue] Skipping auto-suggest: user has pending tasks to review");
+    return;
+  }
+
   // Check session task limit
   if (sessionTaskCount >= MAX_SESSION_TASKS) {
     console.log("[cue] Session task limit reached (50). Accept a task to generate more.");
     return;
   }
+
+  // Mark global cooldown BEFORE the async call to prevent concurrent triggers
+  lastGlobalSuggestTime = now;
 
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -586,9 +616,10 @@ async function triggerAutoSuggest(trigger: string) {
       const limitedTasks = data.tasks.slice(0, MAX_SUGGESTIONS_PER_BATCH);
       console.log(`[cue] Auto-suggest returned ${limitedTasks.length} tasks (capped from ${data.tasks.length}):`, limitedTasks.map((t: any) => t.title));
 
-      // Track session task count
+      // Track session task count and active task count
       sessionTaskCount += limitedTasks.length;
-      console.log(`[cue] Session task count: ${sessionTaskCount}/${MAX_SESSION_TASKS}`);
+      activeTaskCount = Math.min(MAX_ACTIVE_TASKS, activeTaskCount + limitedTasks.length);
+      console.log(`[cue] Session task count: ${sessionTaskCount}/${MAX_SESSION_TASKS}, active: ${activeTaskCount}/${MAX_ACTIVE_TASKS}`);
 
       // Store suggested topic keywords for lockout comparison
       lastSuggestedTopicKeywords = extractTrajectoryKeywords();
@@ -1040,6 +1071,25 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === "CONTEXT_SUGGEST") {
     (async () => {
       try {
+        // Apply same guards as triggerAutoSuggest to prevent duplicate/excessive calls
+        const now = Date.now();
+        if (now - lastGlobalSuggestTime < GLOBAL_SUGGEST_COOLDOWN_MS) {
+          console.log(`[cue] CONTEXT_SUGGEST: skipped (global cooldown, ${Math.round((GLOBAL_SUGGEST_COOLDOWN_MS - (now - lastGlobalSuggestTime)) / 1000)}s left)`);
+          sendResponse({ success: false, error: "Recently suggested. Try again shortly." });
+          return;
+        }
+        if (activeTaskCount >= MAX_ACTIVE_TASKS) {
+          console.log("[cue] CONTEXT_SUGGEST: skipped (user has pending tasks)");
+          sendResponse({ success: false, error: "You have pending tasks to review first." });
+          return;
+        }
+        if (sessionTaskCount >= MAX_SESSION_TASKS) {
+          sendResponse({ success: false, error: "Session task limit reached." });
+          return;
+        }
+        // Mark global cooldown before the API call
+        lastGlobalSuggestTime = now;
+
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         const ctx = await getCueContext();
         const blob = buildContextBlob(ctx);
@@ -1049,7 +1099,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           sendResponse({ success: false, error: "No context to suggest from" });
           return;
         }
-        const contextBlob = blob.trim() || `Currently viewing: ${pageTitle}\n${currentUrl}`;
+        let contextBlob = blob.trim() || `Currently viewing: ${pageTitle}\n${currentUrl}`;
+        const trajectoryContext = getTrajectoryContext();
+        if (trajectoryContext) {
+          contextBlob = `${contextBlob}\n\n${trajectoryContext}`;
+        }
         const res = await fetch(`${API_BASE}/suggest_tasks`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1057,19 +1111,26 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             context_blob: contextBlob,
             page_title: pageTitle,
             current_url: currentUrl,
+            trajectory: urlTrajectory.slice(),
           }),
         });
         const data = await res.json();
         if (data.success && data.tasks && data.tasks.length > 0) {
-          const count = data.tasks.length;
+          const limitedTasks = data.tasks.slice(0, MAX_SUGGESTIONS_PER_BATCH);
+          // Track counts so triggerAutoSuggest won't fire redundantly
+          sessionTaskCount += limitedTasks.length;
+          activeTaskCount = Math.min(MAX_ACTIVE_TASKS, activeTaskCount + limitedTasks.length);
+          console.log(`[cue] CONTEXT_SUGGEST returned ${limitedTasks.length} tasks. Session: ${sessionTaskCount}, active: ${activeTaskCount}`);
+
+          const count = limitedTasks.length;
           const summary = count === 1
-            ? (data.tasks[0].title || "1 task")
+            ? (limitedTasks[0].title || "1 task")
             : `${count} tasks`;
           sendResponse({
             success: true,
             suggestion: `${summary} added to AI Task Automation. View in dashboard.`,
             tasksCount: count,
-            tasks: data.tasks,
+            tasks: limitedTasks,
           });
         } else {
           sendResponse({
@@ -1230,19 +1291,32 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           chrome.tabs.create({ url: data.open_url });
         }
 
-        // Mark task as completed if we have taskId
-        if (data.success && taskId) {
-          try {
-            await fetch(`${API_BASE}/suggested_tasks/${taskId}`, {
-              method: "PATCH",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ status: "completed" }),
-            });
-            // Decrement session task count to allow generating more
-            sessionTaskCount = Math.max(0, sessionTaskCount - 1);
-            console.log(`[cue] Task completed. Session count: ${sessionTaskCount}/${MAX_SESSION_TASKS}`);
-          } catch (e) {
-            console.error("[cue] Failed to mark task as completed:", e);
+        if (taskId) {
+          if (data.success) {
+            // Mark task as completed
+            try {
+              await fetch(`${API_BASE}/suggested_tasks/${taskId}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ status: "completed", open_url: data.open_url || "" }),
+              });
+              sessionTaskCount = Math.max(0, sessionTaskCount - 1);
+              console.log(`[cue] Task completed. Session count: ${sessionTaskCount}/${MAX_SESSION_TASKS}`);
+            } catch (e) {
+              console.error("[cue] Failed to mark task as completed:", e);
+            }
+          } else {
+            // Execution failed (API error, quota, etc.) — move task to AI queue (in_progress)
+            console.warn(`[cue] Task execution failed: ${data.error}. Moving to AI queue.`);
+            try {
+              await fetch(`${API_BASE}/suggested_tasks/${taskId}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ status: "in_progress" }),
+              });
+            } catch (e) {
+              console.error("[cue] Failed to move task to AI queue:", e);
+            }
           }
         }
 
@@ -1256,7 +1330,32 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         }
       } catch (error: any) {
         console.error("[cue] Execute suggested task error:", error);
-        sendResponse({ success: false, error: error.message });
+        const { taskId } = message;
+
+        // Move failed task to AI queue (in_progress) so it shows in dashboard
+        if (taskId) {
+          try {
+            await fetch(`${API_BASE}/suggested_tasks/${taskId}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ status: "in_progress" }),
+            });
+          } catch { /* ignore */ }
+        }
+
+        const errorResult = { success: false, error: error.message, taskId };
+        sendResponse(errorResult);
+
+        // Notify halo to show error toast with library link
+        try {
+          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+          if (tab?.id) {
+            chrome.tabs.sendMessage(tab.id, {
+              type: "TASK_EXECUTED",
+              payload: errorResult,
+            });
+          }
+        } catch { /* tab query failed */ }
       }
     })();
     return true;
@@ -1366,10 +1465,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           return;
         }
 
-        const response = await fetch(`${API_BASE}/execute_command`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+        const body: Record<string, any> = {
             service: message.service,
             command: message.command,
             user_token: userToken,
@@ -1379,7 +1475,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             selected_text: message.selectedText ?? "",
             user_display_name: message.userDisplayName ?? "",
             user_email: message.userEmail ?? "",
-          }),
+        };
+        // Forward pre-parsed params from preview to skip redundant Gemini call
+        if (message.suggested_params && typeof message.suggested_params === "object") {
+            body.suggested_params = message.suggested_params;
+        }
+        const response = await fetch(`${API_BASE}/execute_command`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
         });
         const data = await response.json();
 
@@ -1493,6 +1597,26 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  // User accepted or dismissed a task - decrement active count
+  if (message.type === "TASK_ACTION") {
+    const count = message.count || 1;
+    if (message.action === "accepted") {
+      activeTaskCount = Math.max(0, activeTaskCount - count);
+      console.log(`[cue] Task accepted. Active count: ${activeTaskCount}/${MAX_ACTIVE_TASKS}`);
+    } else if (message.action === "dismissed") {
+      activeTaskCount = Math.max(0, activeTaskCount - count);
+      console.log(`[cue] Task dismissed (${count}). Active count: ${activeTaskCount}/${MAX_ACTIVE_TASKS}`);
+    }
+    // Reset suggestion state so next batch can be generated immediately
+    suggestionState = "active";
+    lastAutoSuggestTime = 0;
+    if (activeTaskCount === 0) {
+      triggerAutoSuggest("task_action").catch(() => {});
+    }
+    sendResponse({ success: true, activeTaskCount });
+    return true;
+  }
+
   // Get URL trajectory for debugging/context
   if (message.type === "GET_TRAJECTORY") {
     sendResponse({
@@ -1553,6 +1677,11 @@ function connectTaskSyncWebSocket() {
         // Handle incoming synced tasks from dashboard
         if (data.type === "SYNCED_TASKS" || data.type === "SUGGESTED_TASKS_UPDATE") {
           const tasks = data.tasks || [];
+          // Update active task count from synced tasks (including empty state)
+          activeTaskCount = Math.min(
+            MAX_ACTIVE_TASKS,
+            tasks.filter((t: any) => t.status !== "completed" && t.status !== "dismissed").length,
+          );
           if (tasks.length > 0) {
             console.log(`[cue] Received ${tasks.length} synced tasks from dashboard`);
 

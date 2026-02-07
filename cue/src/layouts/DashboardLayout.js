@@ -1,16 +1,21 @@
 import React, { useState } from 'react';
-import { NavLink, useNavigate, useLocation } from 'react-router-dom';
+import { NavLink, useLocation } from 'react-router-dom';
 import { clearAuth } from '../auth/googleAuth';
+import cueLogo from '../logo.png';
 
-function DashboardLayout({ user, children, searchQuery, setSearchQuery, dashboardConnected }) {
-  const navigate = useNavigate();
+function DashboardLayout({ user, children, searchQuery, setSearchQuery, dashboardConnected, onLogout }) {
   const location = useLocation();
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [sidebarExpanded, setSidebarExpanded] = useState(false);
 
   const handleLogout = () => {
-    clearAuth();
-    navigate('/login');
+    if (onLogout) {
+      onLogout();
+    } else {
+      // Fallback: clear auth and reload
+      clearAuth();
+      window.location.href = '/';
+    }
   };
 
   const handleRecordNew = () => {
@@ -53,17 +58,7 @@ function DashboardLayout({ user, children, searchQuery, setSearchQuery, dashboar
       <div className="library-sidebar">
         <div className="sidebar-brand">
           <div className="sidebar-logo">
-            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <circle cx="12" cy="12" r="10" fill="url(#logoGradSidebar)" />
-              <path d="M8 12C8 9.79 9.79 8 12 8C14.21 8 16 9.79 16 12" stroke="white" strokeWidth="2" strokeLinecap="round"/>
-              <circle cx="12" cy="14" r="2" fill="white"/>
-              <defs>
-                <linearGradient id="logoGradSidebar" x1="2" y1="2" x2="22" y2="22">
-                  <stop stopColor="#6366f1"/>
-                  <stop offset="1" stopColor="#8b5cf6"/>
-                </linearGradient>
-              </defs>
-            </svg>
+            <img src={cueLogo} alt="cue" className="cue-logo-img" />
           </div>
           <span className="sidebar-brand-text">cue</span>
         </div>
@@ -197,17 +192,7 @@ function DashboardLayout({ user, children, searchQuery, setSearchQuery, dashboar
           <div className="dashboard-topbar">
             <div className="topbar-brand">
               <div className="topbar-logo">
-                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <circle cx="12" cy="12" r="10" fill="url(#logoGradTopbar)" />
-                  <path d="M8 12C8 9.79 9.79 8 12 8C14.21 8 16 9.79 16 12" stroke="white" strokeWidth="2" strokeLinecap="round"/>
-                  <circle cx="12" cy="14" r="2" fill="white"/>
-                  <defs>
-                    <linearGradient id="logoGradTopbar" x1="2" y1="2" x2="22" y2="22">
-                      <stop stopColor="#6366f1"/>
-                      <stop offset="1" stopColor="#8b5cf6"/>
-                    </linearGradient>
-                  </defs>
-                </svg>
+                <img src={cueLogo} alt="cue" className="cue-logo-img" />
               </div>
               <span className="topbar-brand-text">Cue AI</span>
             </div>

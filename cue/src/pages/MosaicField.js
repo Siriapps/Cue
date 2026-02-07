@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import Draggable from 'react-draggable';
 import { config } from '../config';
 import { getStoredToken } from '../auth/googleAuth';
@@ -7,15 +7,30 @@ const ADK_API_URL = config.API_BASE_URL;
 const MOSAIC_LAYOUT_KEY = 'cue_mosaic_layout';
 const HUB_SIZE = { width: 280, height: 200 };
 const PRODUCTIVITY_HUB_SIZE = { width: 220, height: 260 };
-// Spread out positions for larger canvas (2000x1500)
+const INSIGHTS_HUB_SIZE = { width: 320, height: 280 };
+const EVENTS_HUB_SIZE = { width: 280, height: 220 };
+// Productivity centered, hubs radiate outward in 2000x1500 canvas
 const DEFAULT_POSITIONS = {
-  'productivity': { x: 80, y: 80 },
-  'deep-work': { x: 450, y: 120 },
-  'comms': { x: 850, y: 80 },
-  'priority': { x: 450, y: 420 },
-  'recent': { x: 120, y: 450 },
-  'waiting': { x: 780, y: 420 },
+  'productivity': { x: 840, y: 520 },
+  'deep-work': { x: 380, y: 520 },
+  'comms': { x: 1260, y: 420 },
+  'events': { x: 1260, y: 760 },
+  'insights': { x: 1260, y: 120 },
+  'priority': { x: 840, y: 860 },
+  'recent': { x: 520, y: 860 },
+  'waiting': { x: 1160, y: 860 },
 };
+
+// Fixed edge list for neural connections (star from productivity + priority branches)
+const NEURAL_EDGES = [
+  ['productivity', 'comms'],
+  ['productivity', 'events'],
+  ['productivity', 'deep-work'],
+  ['productivity', 'insights'],
+  ['productivity', 'priority'],
+  ['priority', 'recent'],
+  ['priority', 'waiting'],
+];
 
 function MosaicField() {
   const [sessions, setSessions] = useState([]);
@@ -32,7 +47,17 @@ function MosaicField() {
     } catch (e) {}
     return { ...DEFAULT_POSITIONS };
   });
-  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [pan, setPan] = useState(() => {
+    try {
+      if (!localStorage.getItem(MOSAIC_LAYOUT_KEY)) {
+        const prod = DEFAULT_POSITIONS.productivity;
+        const cw = 220 / 2;
+        const ch = 260 / 2;
+        return { x: -prod.x - cw + 400, y: -prod.y - ch + 300 };
+      }
+    } catch (e) {}
+    return { x: 0, y: 0 };
+  });
   const [scale, setScale] = useState(1);
   const [canvasSearch, setCanvasSearch] = useState('');
   const [expandedHubId, setExpandedHubId] = useState(null);
@@ -46,6 +71,7 @@ function MosaicField() {
   });
   const [gmailUnread, setGmailUnread] = useState(null);
   const [gmailSummary, setGmailSummary] = useState(null);
+  const [whatToDo, setWhatToDo] = useState(null);
   const [calendarUpcoming, setCalendarUpcoming] = useState([]);
   const [commsLoading, setCommsLoading] = useState(false);
   const canvasRef = useRef(null);
@@ -69,8 +95,6 @@ function MosaicField() {
 
   // Activity stats
   const gmailCount = activities.filter(a => a.service === 'gmail').length;
-  const calendarCount = activities.filter(a => a.service === 'calendar').length;
-  const docsCount = activities.filter(a => a.service === 'docs').length;
 
   const fetchSessions = useCallback((silent = false) => {
     if (!silent) setLoading(true);
@@ -95,9 +119,10 @@ function MosaicField() {
       .catch(() => setActivities([]));
   }, []);
 
-  const fetchCommsData = useCallback(() => {
+  const fetchCommsData = useCallback((forceRefresh = false) => {
     const token = getStoredToken();
     if (!token) return;
+    if (!forceRefresh && sessionStorage.getItem('cue_comms_fetched')) return;
     setCommsLoading(true);
     fetch(`${ADK_API_URL}/mosaic/comms`, {
       method: 'POST',
@@ -108,11 +133,14 @@ function MosaicField() {
       .then((data) => {
         setGmailUnread(data.gmail_unread_count != null ? data.gmail_unread_count : null);
         setGmailSummary(data.gmail_summary ?? null);
+        setWhatToDo(data.what_to_do ?? null);
         setCalendarUpcoming(Array.isArray(data.calendar_upcoming) ? data.calendar_upcoming : []);
+        try { sessionStorage.setItem('cue_comms_fetched', '1'); } catch (e) {}
       })
       .catch(() => {
         setGmailUnread(null);
         setGmailSummary(null);
+        setWhatToDo(null);
         setCalendarUpcoming([]);
       })
       .finally(() => setCommsLoading(false));
@@ -126,14 +154,6 @@ function MosaicField() {
 
   useEffect(() => {
     fetchCommsData();
-  }, [fetchCommsData]);
-
-  useEffect(() => {
-    const onVisibility = () => {
-      if (document.visibilityState === 'visible') fetchCommsData();
-    };
-    document.addEventListener('visibilitychange', onVisibility);
-    return () => document.removeEventListener('visibilitychange', onVisibility);
   }, [fetchCommsData]);
 
   useEffect(() => {
@@ -273,12 +293,84 @@ function MosaicField() {
   const priority = sessions.filter((s) => (s.summary?.sentiment || '').toLowerCase() === 'urgent' || (s.summary?.action_items?.length || 0) > 2).slice(0, 4);
   const waiting = sessions.filter((s) => (s.summary?.action_items || []).some((a) => (a.task || a.action || '').toLowerCase().includes('wait'))).slice(0, 4);
   const pendingTasks = tasks.filter(t => t.status === 'pending').slice(0, 5);
-  const recentActivities = activities.slice(0, 5);
 
-  const hubIds = ['productivity', 'deep-work', 'comms', 'priority', 'recent', 'waiting'];
+  // Insights hub data
+  const activityCounts = useMemo(() => {
+    const counts = { gmail: 0, calendar: 0, docs: 0, sheets: 0, drive: 0, tasks: 0 };
+    activities.forEach(a => {
+      const svc = a.service || 'other';
+      if (counts[svc] !== undefined) counts[svc]++;
+    });
+    return counts;
+  }, [activities]);
+
+  const personalityScores = useMemo(() => {
+    const scores = { Analytical: 0.7, 'Future-Oriented': 0.6, Structured: 0.7, Engaged: 0.5 };
+    if (activityCounts.docs > 3) scores.Analytical = Math.min(scores.Analytical + 0.15, 1);
+    if (activityCounts.calendar > 2) scores.Structured = Math.min(scores.Structured + 0.15, 1);
+    if (sessions.length > 3) scores.Engaged = Math.min(scores.Engaged + 0.2, 1);
+    if (activityCounts.sheets > 1) scores.Analytical = Math.min(scores.Analytical + 0.1, 1);
+    return scores;
+  }, [activityCounts, sessions]);
+
+  const weeklyTrend = useMemo(() => {
+    const trend = [];
+    const now = new Date();
+    for (let i = 6; i >= 0; i--) {
+      const date = new Date(now);
+      date.setDate(date.getDate() - i);
+      const dayStr = date.toDateString();
+      const dayTasks = tasks.filter(t => {
+        const created = new Date(t.created_at);
+        return created.toDateString() === dayStr;
+      });
+      const completed = dayTasks.filter(t => t.status === 'completed').length;
+      const total = dayTasks.length || 1;
+      trend.push(Math.round((completed / total) * 100));
+    }
+    return trend;
+  }, [tasks]);
+
+  const habitStreak = useMemo(() => {
+    let streak = 0;
+    const now = new Date();
+    for (let i = 0; i < 30; i++) {
+      const date = new Date(now);
+      date.setDate(date.getDate() - i);
+      const dayStr = date.toDateString();
+      const hasActivity = sessions.some(s => new Date(s.created_at).toDateString() === dayStr) ||
+        activities.some(a => {
+          try { return new Date(parseInt(String(a._id).substring(0, 8), 16) * 1000).toDateString() === dayStr; }
+          catch { return false; }
+        });
+      if (hasActivity) streak++;
+      else break;
+    }
+    return streak;
+  }, [sessions, activities]);
+
+  const personalityType = useMemo(() => {
+    const top = Object.entries(personalityScores).sort((a, b) => b[1] - a[1])[0][0];
+    if (top === 'Analytical') return 'The Strategist';
+    if (top === 'Structured') return 'The Architect';
+    if (top === 'Engaged') return 'The Collaborator';
+    return 'The Visionary';
+  }, [personalityScores]);
+
+  // Focus hub data: derive title from recent sessions or pending tasks
+  const focusTitle = useMemo(() => {
+    if (pendingTasks.length > 0) return pendingTasks[0].title || 'Current Focus';
+    if (sessions.length > 0) return sessions[0].title || 'Hackathon Research';
+    return 'Hackathon Research';
+  }, [pendingTasks, sessions]);
+
+  const hubIds = ['productivity', 'deep-work', 'comms', 'events', 'insights', 'priority', 'recent', 'waiting'];
   const hubCenters = hubIds.map((id) => {
     const pos = hubPositions[id] || DEFAULT_POSITIONS[id] || { x: 100, y: 100 };
-    const size = id === 'productivity' ? PRODUCTIVITY_HUB_SIZE : HUB_SIZE;
+    const size = id === 'productivity' ? PRODUCTIVITY_HUB_SIZE
+      : id === 'insights' ? INSIGHTS_HUB_SIZE
+      : id === 'events' ? EVENTS_HUB_SIZE
+      : HUB_SIZE;
     return {
       id,
       x: pos.x + size.width / 2,
@@ -341,7 +433,7 @@ function MosaicField() {
           }}
         >
           {/* Neural lines: glowing connections between hubs (update with hub positions) */}
-          <svg className="mosaic-neural-lines" width={800} height={600} viewBox="0 0 800 600">
+          <svg className="mosaic-neural-lines" width={2000} height={1500} viewBox="0 0 2000 1500">
             <defs>
               <linearGradient id="neuralGrad" x1="0%" y1="0%" x2="100%" y2="0%">
                 <stop offset="0%" stopColor="rgba(139, 92, 246, 0.7)" />
@@ -355,19 +447,21 @@ function MosaicField() {
                 </feMerge>
               </filter>
             </defs>
-            {hubCenters.map((curr, i) => {
-              const next = hubCenters[(i + 1) % hubCenters.length];
+            {NEURAL_EDGES.map(([fromId, toId]) => {
+              const from = hubCenters.find(h => h.id === fromId);
+              const to = hubCenters.find(h => h.id === toId);
+              if (!from || !to) return null;
               return (
                 <line
-                  key={`line-${curr.id}-${next.id}`}
-                  x1={curr.x}
-                  y1={curr.y}
-                  x2={next.x}
-                  y2={next.y}
+                  key={`line-${fromId}-${toId}`}
+                  x1={from.x}
+                  y1={from.y}
+                  x2={to.x}
+                  y2={to.y}
                   className="mosaic-neural-line"
                   stroke="url(#neuralGrad)"
                   strokeWidth="1.5"
-                  strokeOpacity="0.7"
+                  strokeOpacity="0.5"
                   filter="url(#neuralGlow)"
                 />
               );
@@ -378,7 +472,12 @@ function MosaicField() {
           {hubIds.map((hubId) => {
             const pos = hubPositions[hubId] || DEFAULT_POSITIONS[hubId] || { x: 100, y: 100 };
             const isProductivity = hubId === 'productivity';
-            const size = isProductivity ? PRODUCTIVITY_HUB_SIZE : HUB_SIZE;
+            const isInsights = hubId === 'insights';
+            const isEvents = hubId === 'events';
+            const size = isProductivity ? PRODUCTIVITY_HUB_SIZE
+              : isInsights ? INSIGHTS_HUB_SIZE
+              : isEvents ? EVENTS_HUB_SIZE
+              : HUB_SIZE;
 
             return (
               <Draggable
@@ -388,12 +487,12 @@ function MosaicField() {
                 onDrag={(e, data) => handleHubDrag(hubId, e, data)}
                 onStop={(e, data) => handleHubDragStop(hubId, e, data)}
                 cancel=".mosaic-hub-expand-btn, .mosaic-item, .mosaic-task-item"
-                bounds="parent"
+                bounds={false}
               >
                 <div
-                  className={`mosaic-hub-card glassmorphic ${isProductivity ? 'productivity-hub' : ''}`}
+                  className={`mosaic-hub-card glassmorphic ${isProductivity ? 'productivity-hub' : ''} ${isInsights ? 'insights-hub' : ''} ${isEvents ? 'events-hub' : ''}`}
                   style={{ width: size.width, height: size.height }}
-                  onClick={() => !isProductivity && setExpandedHubId(hubId)}
+                  onClick={() => setExpandedHubId(hubId)}
                 >
                   {hubId === 'productivity' && (
                     <>
@@ -432,13 +531,13 @@ function MosaicField() {
                   {hubId === 'deep-work' && (
                     <>
                       <div className="hub-badge">DEEP WORK</div>
-                      <h3>Hackathon Research</h3>
-                      <p className="hub-subtitle">Phase 3: Execution & Development</p>
+                      <h3>{focusTitle}</h3>
+                      <p className="hub-subtitle">{pendingTasks.length > 0 ? `${pendingTasks.length} tasks in focus` : 'No active focus'}</p>
                       <div className="hub-progress">
                         <div className="progress-bar-mini">
-                          <div className="progress-fill" style={{ width: '65%' }} />
+                          <div className="progress-fill" style={{ width: `${productivityScore}%` }} />
                         </div>
-                        <span className="progress-label">65%</span>
+                        <span className="progress-label">{productivityScore}%</span>
                       </div>
                       {pendingTasks.slice(0, 2).map((t, i) => (
                         <div key={t._id || i} className="mosaic-task-item">
@@ -467,6 +566,12 @@ function MosaicField() {
                               <p className="comms-gemini-text">{gmailSummary}</p>
                             </div>
                           )}
+                          {whatToDo && (
+                            <div className="comms-gemini-card what-to-do">
+                              <div className="comms-gemini-label">What you should do</div>
+                              <p className="comms-gemini-text">{whatToDo}</p>
+                            </div>
+                          )}
                           <div className="comms-section">
                             <div className="comms-label">Upcoming</div>
                             {calendarUpcoming.length === 0 && !commsLoading ? (
@@ -480,6 +585,65 @@ function MosaicField() {
                               ))
                             )}
                           </div>
+                        </>
+                      )}
+                    </>
+                  )}
+                  {hubId === 'insights' && (
+                    <>
+                      <div className="hub-badge insights">USER INSIGHTS</div>
+                      <div className="insights-hub-content">
+                        {/* Mini personality */}
+                        <div className="insights-row">
+                          <div className="insights-mini-card">
+                            <span className="insights-mini-label">Personality</span>
+                            <span className="insights-mini-value">{personalityType}</span>
+                          </div>
+                          <div className="insights-mini-card">
+                            <span className="insights-mini-label">Score</span>
+                            <div className="insights-mini-ring">
+                              <svg viewBox="0 0 36 36" className="mini-ring-svg">
+                                <circle cx="18" cy="18" r="14" fill="none" stroke="rgba(139,92,246,0.2)" strokeWidth="3" />
+                                <circle cx="18" cy="18" r="14" fill="none" stroke="#8b5cf6" strokeWidth="3"
+                                  strokeDasharray={`${productivityScore * 0.88} 88`} strokeLinecap="round"
+                                  transform="rotate(-90 18 18)" />
+                              </svg>
+                              <span className="mini-ring-val">{productivityScore}%</span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="insights-row">
+                          <div className="insights-mini-card">
+                            <span className="insights-mini-label">Streak</span>
+                            <span className="insights-streak-val">{habitStreak}d</span>
+                          </div>
+                          <div className="insights-mini-card">
+                            <span className="insights-mini-label">Activities</span>
+                            <span className="insights-activity-count">{activities.length}</span>
+                          </div>
+                        </div>
+                        <p className="insights-expand-hint">Click to expand</p>
+                      </div>
+                    </>
+                  )}
+                  {hubId === 'events' && (
+                    <>
+                      <div className="hub-badge events">EVENTS</div>
+                      {!getStoredToken() ? (
+                        <p className="comms-sign-in mosaic-muted">Sign in with Google to see events</p>
+                      ) : (
+                        <>
+                          <p className="hub-subtitle">{calendarUpcoming.length} upcoming</p>
+                          {calendarUpcoming.length === 0 && !commsLoading ? (
+                            <p className="mosaic-muted">No upcoming events</p>
+                          ) : (
+                            calendarUpcoming.slice(0, 3).map((ev, i) => (
+                              <div key={ev.id || i} className="comms-item">
+                                <span className="comms-sender">{ev.summary}</span>
+                                <span className="comms-time">{formatCalendarStart(ev.start)}</span>
+                              </div>
+                            ))
+                          )}
                         </>
                       )}
                     </>
@@ -523,7 +687,7 @@ function MosaicField() {
               position={hub.position}
               onDrag={(e, data) => handleCustomHubDrag(hub.id, data)}
               onStop={(e, data) => handleCustomHubDragStop(hub.id, data)}
-              bounds="parent"
+              bounds={false}
             >
               <div
                 className="mosaic-hub-card custom-hub glassmorphic"
@@ -567,11 +731,47 @@ function MosaicField() {
         <div className="mosaic-expand-overlay" onClick={() => setExpandedHubId(null)}>
           <div className="mosaic-expand-panel glassmorphic" onClick={(e) => e.stopPropagation()}>
             <button type="button" className="mosaic-expand-close" onClick={() => setExpandedHubId(null)}>Close</button>
+            {expandedHubId === 'productivity' && (
+              <>
+                <h3>Productivity Overview</h3>
+                <div className="expand-stats-grid">
+                  <div className="expand-stat-card">
+                    <span className="expand-stat-value">{productivityScore}%</span>
+                    <span className="expand-stat-label">Score</span>
+                  </div>
+                  <div className="expand-stat-card">
+                    <span className="expand-stat-value">{completedTasks}/{totalTasks}</span>
+                    <span className="expand-stat-label">Tasks Done</span>
+                  </div>
+                  <div className="expand-stat-card">
+                    <span className="expand-stat-value">{sessions.length}</span>
+                    <span className="expand-stat-label">Sessions</span>
+                  </div>
+                  <div className="expand-stat-card">
+                    <span className="expand-stat-value">{activities.length}</span>
+                    <span className="expand-stat-label">Activities</span>
+                  </div>
+                </div>
+                <h4>Recent Activity</h4>
+                {activities.slice(0, 8).map((a, i) => (
+                  <div key={a._id || i} className="mosaic-item">
+                    <span className="task-status-dot" style={{ background: a.service === 'gmail' ? '#ea4335' : a.service === 'calendar' ? '#4285f4' : '#34a853' }} />
+                    {a.description || a.action || 'Activity'} ({a.service})
+                  </div>
+                ))}
+              </>
+            )}
             {expandedHubId === 'deep-work' && (
               <>
-                <h3>Deep Work</h3>
-                <p>Current focus and live progress</p>
-                <p className="mosaic-muted">Start a session from the extension to see live progress here.</p>
+                <h3>{focusTitle}</h3>
+                <p>{pendingTasks.length} pending tasks in focus</p>
+                {pendingTasks.map((t, i) => (
+                  <div key={t._id || i} className="mosaic-task-item">
+                    <span className="task-status-dot pending" />
+                    <span className="task-text">{t.title}</span>
+                  </div>
+                ))}
+                {pendingTasks.length === 0 && <p className="mosaic-muted">Start a session from the extension to see live progress here.</p>}
               </>
             )}
             {expandedHubId === 'priority' && (
@@ -608,6 +808,14 @@ function MosaicField() {
                   <p className="mosaic-muted">Sign in with Google to see Gmail and Calendar.</p>
                 ) : (
                   <>
+                    <button
+                      type="button"
+                      className="mosaic-expand-refresh"
+                      onClick={() => fetchCommsData(true)}
+                      disabled={commsLoading}
+                    >
+                      {commsLoading ? 'Refreshing…' : 'Refresh'}
+                    </button>
                     <div className="comms-section">
                       <div className="comms-label">Gmail</div>
                       <span className="comms-badge new">
@@ -618,6 +826,12 @@ function MosaicField() {
                       <div className="comms-gemini-card expanded">
                         <div className="comms-gemini-label">Important from today (Gemini)</div>
                         <p className="comms-gemini-text">{gmailSummary}</p>
+                      </div>
+                    )}
+                    {whatToDo && (
+                      <div className="comms-gemini-card expanded what-to-do">
+                        <div className="comms-gemini-label">What you should do</div>
+                        <p className="comms-gemini-text">{whatToDo}</p>
                       </div>
                     )}
                     <div className="comms-section">
@@ -638,6 +852,167 @@ function MosaicField() {
                   </>
                 )}
               </>
+            )}
+            {expandedHubId === 'events' && (
+              <>
+                <h3>Upcoming Events</h3>
+                {!getStoredToken() ? (
+                  <p className="mosaic-muted">Sign in with Google to see your calendar.</p>
+                ) : calendarUpcoming.length === 0 ? (
+                  <p className="mosaic-muted">No upcoming events</p>
+                ) : (
+                  <ul className="comms-calendar-list">
+                    {calendarUpcoming.map((ev, i) => (
+                      <li key={ev.id || i} className="comms-item">
+                        <span className="comms-sender">{ev.summary}</span>
+                        <span className="comms-time">{formatCalendarStart(ev.start)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            )}
+            {expandedHubId === 'insights' && (
+              <div className="insights-expanded">
+                <h3>User Insights</h3>
+                <div className="insights-grid">
+                  {/* Personality Card */}
+                  <div className="insight-card personality-insight">
+                    <span className="insight-card-label">User Personality:</span>
+                    <h4 className="insight-personality-type">{personalityType}</h4>
+                    <div className="insight-radar">
+                      <svg viewBox="0 0 200 200" className="radar-svg-expanded">
+                        <polygon points="100,20 170,60 170,140 100,180 30,140 30,60" fill="none" stroke="rgba(139,92,246,0.3)" strokeWidth="1" />
+                        <polygon points="100,40 155,70 155,130 100,160 45,130 45,70" fill="none" stroke="rgba(139,92,246,0.2)" strokeWidth="1" />
+                        <polygon points="100,60 140,80 140,120 100,140 60,120 60,80" fill="none" stroke="rgba(139,92,246,0.1)" strokeWidth="1" />
+                        <polygon
+                          points={`100,${20 + (1 - personalityScores.Analytical) * 80} ${100 + personalityScores['Future-Oriented'] * 70},${60 + (1 - personalityScores['Future-Oriented']) * 40} ${100 + personalityScores.Structured * 70},${140 - (1 - personalityScores.Structured) * 40} 100,${180 - (1 - personalityScores.Engaged) * 80} ${100 - personalityScores.Structured * 70},${140 - (1 - personalityScores.Structured) * 40} ${100 - personalityScores['Future-Oriented'] * 70},${60 + (1 - personalityScores['Future-Oriented']) * 40}`}
+                          fill="rgba(139,92,246,0.3)" stroke="#8b5cf6" strokeWidth="2"
+                        />
+                        {Object.values(personalityScores).map((v, i) => {
+                          const angles = [270, 330, 30, 90, 150, 210];
+                          const rad = (angles[i] * Math.PI) / 180;
+                          const r = 20 + v * 60;
+                          return <circle key={i} cx={100 + Math.cos(rad) * r} cy={100 + Math.sin(rad) * r} r="3" fill="#a78bfa" />;
+                        })}
+                      </svg>
+                      <span className="radar-lbl top">Analytical</span>
+                      <span className="radar-lbl right">Future-Oriented</span>
+                      <span className="radar-lbl bottom-right">Structured</span>
+                      <span className="radar-lbl bottom">Engaged</span>
+                    </div>
+                  </div>
+
+                  {/* Recent Activities Card */}
+                  <div className="insight-card activities-insight">
+                    <span className="insight-card-label">Recent Activities</span>
+                    <div className="insight-activities-icons">
+                      {[
+                        { key: 'gmail', icon: 'M', count: activityCounts.gmail },
+                        { key: 'calendar', icon: 'C', count: activityCounts.calendar },
+                        { key: 'docs', icon: 'D', count: activityCounts.docs },
+                        { key: 'sheets', icon: 'S', count: activityCounts.sheets },
+                        { key: 'drive', icon: 'F', count: activityCounts.drive },
+                        { key: 'tasks', icon: 'T', count: activityCounts.tasks },
+                      ].map(svc => (
+                        <div key={svc.key} className={`insight-act-icon ${svc.count > 0 ? 'active' : ''}`}>
+                          <span>{svc.icon}</span>
+                          {svc.count > 0 && <span className="act-count">{svc.count}</span>}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Productivity Score Card */}
+                  <div className="insight-card score-insight">
+                    <span className="insight-card-label">Productivity Score: {productivityScore}/100</span>
+                    <div className="insight-score-content">
+                      <div className="insight-ring-wrap">
+                        <svg viewBox="0 0 100 100" className="insight-ring-svg">
+                          <circle cx="50" cy="50" r="38" fill="none" stroke="rgba(139,92,246,0.2)" strokeWidth="7" />
+                          <circle cx="50" cy="50" r="38" fill="none" stroke="url(#insightProdGrad)" strokeWidth="7"
+                            strokeDasharray={`${productivityScore * 2.39} 239`} strokeLinecap="round"
+                            transform="rotate(-90 50 50)" />
+                          <defs>
+                            <linearGradient id="insightProdGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+                              <stop offset="0%" stopColor="#8b5cf6" />
+                              <stop offset="100%" stopColor="#d946ef" />
+                            </linearGradient>
+                          </defs>
+                        </svg>
+                        <span className="insight-ring-value">{productivityScore}<small>/100</small></span>
+                      </div>
+                      <div className="insight-trend-wrap">
+                        <svg viewBox="0 0 140 50" className="insight-trend-svg">
+                          <polyline
+                            points={weeklyTrend.map((v, i) => `${i * 20 + 10},${48 - (v / 100) * 40}`).join(' ')}
+                            fill="none" stroke="#6366f1" strokeWidth="2"
+                          />
+                          {weeklyTrend.map((v, i) => (
+                            <circle key={i} cx={i * 20 + 10} cy={48 - (v / 100) * 40} r="2.5" fill="#6366f1" />
+                          ))}
+                        </svg>
+                        <div className="insight-day-labels">
+                          {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((d, i) => (
+                            <span key={i}>{d}</span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Focus & Habits Card */}
+                  <div className="insight-card focus-insight">
+                    <span className="insight-card-label">Focus & Habits</span>
+                    <span className="insight-focus-sub">Deep Work Hours</span>
+                    <div className="insight-heatmap">
+                      {Array.from({ length: 5 }).map((_, row) => (
+                        <div key={row} className="heatmap-row-exp">
+                          {Array.from({ length: 7 }).map((_, col) => {
+                            const intensity = Math.random() * 0.9;
+                            return (
+                              <div key={col} className="heatmap-cell-exp" style={{
+                                backgroundColor: intensity > 0.6 ? '#d946ef' : intensity > 0.3 ? '#8b5cf6' : intensity > 0.1 ? '#6366f1' : 'rgba(99,102,241,0.15)',
+                                opacity: 0.3 + intensity * 0.7
+                              }} />
+                            );
+                          })}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Habit Streak Card */}
+                  <div className="insight-card streak-insight">
+                    <span className="insight-card-label">Habit Streak</span>
+                    <div className="insight-streak-arc">
+                      <svg viewBox="0 0 100 55">
+                        <path d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke="rgba(139,92,246,0.2)" strokeWidth="7" strokeLinecap="round" />
+                        <path d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke="url(#arcGradExp)" strokeWidth="7" strokeLinecap="round"
+                          strokeDasharray={`${Math.min(habitStreak / 7, 1) * 126} 126`} />
+                        <defs>
+                          <linearGradient id="arcGradExp" x1="0%" y1="0%" x2="100%" y2="0%">
+                            <stop offset="0%" stopColor="#22d3ee" />
+                            <stop offset="100%" stopColor="#6366f1" />
+                          </linearGradient>
+                        </defs>
+                      </svg>
+                    </div>
+                    <span className="insight-streak-days">{habitStreak} Days</span>
+                  </div>
+
+                  {/* Habit Streak Lightning Card */}
+                  <div className="insight-card streak-lightning-insight">
+                    <span className="insight-card-label">Habit Streak</span>
+                    <div className="insight-lightning-row">
+                      {[1, 2, 3, 4, 5].map(i => (
+                        <span key={i} className={`insight-bolt ${i <= habitStreak ? 'active' : ''}`}>&#9889;</span>
+                      ))}
+                    </div>
+                    <span className="insight-streak-sub">Habit Streak</span>
+                  </div>
+                </div>
+              </div>
             )}
           </div>
         </div>

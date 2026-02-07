@@ -1,9 +1,12 @@
-/* Landing page - Dark Null0-inspired theme */
+/* Landing page - Dark Null0-inspired theme. Page is the scroll container so Features/Demo/About are reachable by scrolling. */
 .landing-page {
+  height: 100vh;
   min-height: 100vh;
   background: #0a0a0b;
   position: relative;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .landing-nav {
@@ -80,7 +83,7 @@
   min-height: calc(100vh - 80px);
   position: relative;
   padding: 40px 24px;
-  overflow: hidden;
+  overflow: visible;
 }
 
 /* Soft fade at bottom of hero so transition to features is subtle (no hard line) */
@@ -803,6 +806,11 @@
   gap: 8px;
   color: #fafafa;
   font-weight: 600;
+}
+
+.footer-brand .cue-logo-img {
+  width: 24px;
+  height: 24px;
 }
 
 .footer-text {

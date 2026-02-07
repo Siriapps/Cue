@@ -65,14 +65,14 @@ def call_gemini(
     # #endregion
     global _api_call_count
     _api_call_count += 1
-    
+
     # Warn if exceeding 20 API calls
     if _api_call_count > 20:
         print(
             f"⚠️  WARNING: API call count exceeded 20 (current: {_api_call_count})",
             file=sys.stderr
         )
-    
+
     api_key = _get_api_key()
     model = _get_model()
     url = (

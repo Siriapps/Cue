@@ -6,6 +6,26 @@ import type { CueContext } from "../shared/context_store";
 
 const LIBRARY_URL = import.meta.env.VITE_LIBRARY_URL || "http://localhost:3001";
 
+// Fallback clipboard copy using execCommand for older browsers or when Clipboard API fails
+function fallbackCopyToClipboard(text: string): void {
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.style.position = "fixed";
+  textarea.style.top = "0";
+  textarea.style.left = "0";
+  textarea.style.opacity = "0";
+  textarea.style.pointerEvents = "none";
+  document.body.appendChild(textarea);
+  textarea.select();
+  try {
+    document.execCommand("copy");
+    console.log("[cue] Copied via fallback execCommand");
+  } catch (e) {
+    console.error("[cue] Fallback clipboard copy failed:", e);
+  }
+  document.body.removeChild(textarea);
+}
+
 type SessionState = "idle" | "recording" | "paused";
 
 export function HaloStrip(): React.JSX.Element {
@@ -58,6 +78,7 @@ export function HaloStrip(): React.JSX.Element {
 
   // Toast notification state
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [toastLibraryUrl, setToastLibraryUrl] = useState<string | null>(null);
 
   // Edit task modal state
   const [editingTask, setEditingTask] = useState<SuggestedTask | null>(null);
@@ -137,26 +158,57 @@ export function HaloStrip(): React.JSX.Element {
         // Show toast notification if prompt was copied or there's a message
         if (p.promptCopied && p.message) {
           setToastMessage(p.message);
+          setToastLibraryUrl(null);
           setTimeout(() => setToastMessage(null), 4000);
         } else if (p.error) {
-          setToastMessage(`Error: ${p.error}`);
-          setTimeout(() => setToastMessage(null), 4000);
+          setToastMessage("Action couldn't be completed. Go to the Library to see your sessions and tasks, or retry from there.");
+          setToastLibraryUrl(LIBRARY_URL);
+          setTimeout(() => { setToastMessage(null); setToastLibraryUrl(null); }, 6000);
         }
       }
-      // Handle clipboard copy request (for OpenAI Studio auto-open)
+      // Handle clipboard copy request (for AI chat auto-open)
       if (message.type === "COPY_TO_CLIPBOARD" && message.payload) {
         const p = message.payload as { text?: string };
         if (p.text) {
-          navigator.clipboard.writeText(p.text).then(() => {
-            console.log("[cue] Copied prompt to clipboard for OpenAI Studio");
-          }).catch((err) => {
-            console.error("[cue] Failed to copy to clipboard:", err);
-          });
+          // Try modern Clipboard API first, fallback to execCommand
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(p.text).then(() => {
+              console.log("[cue] Copied prompt to clipboard");
+            }).catch(() => {
+              // Fallback to execCommand on failure
+              fallbackCopyToClipboard(p.text);
+            });
+          } else {
+            fallbackCopyToClipboard(p.text);
+          }
         }
       }
     };
     chrome.runtime.onMessage.addListener(listener);
     return () => chrome.runtime.onMessage.removeListener(listener);
+  }, []);
+
+  // After 10s on page, request "next step" and show notification (once per load)
+  const nextStepRequested = useRef(false);
+  useEffect(() => {
+    if (nextStepRequested.current || !chrome?.runtime?.id) return;
+    const t = window.setTimeout(() => {
+      nextStepRequested.current = true;
+      chrome.runtime.sendMessage({ type: "CONTEXT_SUGGEST" }, (response: { success?: boolean; error?: string; tasks?: { title?: string }[] }) => {
+        if (chrome.runtime.lastError) return;
+        if (response?.success && response.tasks?.length) {
+          const title = response.tasks[0].title || "Suggested task";
+          setToastMessage(`Your next step: ${title}`);
+          setToastLibraryUrl(null);
+          setTimeout(() => setToastMessage(null), 5000);
+        } else if (response?.error) {
+          setToastMessage("Go to the Library to see your sessions and tasks, or retry from there.");
+          setToastLibraryUrl(LIBRARY_URL);
+          setTimeout(() => { setToastMessage(null); setToastLibraryUrl(null); }, 6000);
+        }
+      });
+    }, 10000);
+    return () => clearTimeout(t);
   }, []);
 
   // Load collapsed state from storage
@@ -419,6 +471,7 @@ export function HaloStrip(): React.JSX.Element {
           type: "EXECUTE_COMMAND",
           service: commandPreview.service,
           command: commandPreview.original_query.replace(/^@\w+\s+/, ""),
+          suggested_params: commandPreview.params || {},
         },
         (response) => {
           setIsThinking(false);
@@ -431,7 +484,7 @@ export function HaloStrip(): React.JSX.Element {
             const msg = (response.message || "").trim();
             setAiAnswer(msg ? (msg.toLowerCase() === "done" ? "Command completed." : msg) : "Command completed.");
           } else {
-            setAiAnswer(`Error: ${response?.error || "Command failed"}`);
+            setAiAnswer(`Error: ${response?.error || "Command failed"}\n\nGo to the Library to see your sessions and tasks, or retry from there.`);
           }
           setCommandPreview(null);
         }
@@ -614,6 +667,11 @@ export function HaloStrip(): React.JSX.Element {
   const handleAcceptTask = (task: SuggestedTask) => {
     setExecutingTaskId(task.id || null);
 
+    // Notify background that a task was accepted (decrement active count)
+    try {
+      chrome.runtime.sendMessage({ type: "TASK_ACTION", action: "accepted", count: 1 });
+    } catch { /* Extension context invalidated */ }
+
     // If no service/action, treat as AI research task - open Gemini with the prompt
     if (!task.service || !task.action) {
       const prompt = task.description || task.title || "Help me with this task";
@@ -647,6 +705,11 @@ export function HaloStrip(): React.JSX.Element {
   };
 
   const handleDismissTask = (taskId: string | undefined) => {
+    // Notify background that a task was dismissed
+    try {
+      chrome.runtime.sendMessage({ type: "TASK_ACTION", action: "dismissed", count: 1 });
+    } catch { /* Extension context invalidated */ }
+
     if (!taskId) {
       // No ID, just remove from local state
       setPredictedTasks((prev) => prev.slice(1));
@@ -666,6 +729,11 @@ export function HaloStrip(): React.JSX.Element {
   };
 
   const handleDismissAllTasks = () => {
+    // Notify background that all tasks were dismissed
+    try {
+      chrome.runtime.sendMessage({ type: "TASK_ACTION", action: "dismissed", count: predictedTasks.length });
+    } catch { /* Extension context invalidated */ }
+
     // Dismiss all tasks
     predictedTasks.forEach((task) => {
       if (task.id) {
@@ -1006,7 +1074,12 @@ export function HaloStrip(): React.JSX.Element {
       {toastMessage && (
         <div className="halo-toast">
           <span>{toastMessage}</span>
-          <button onClick={() => setToastMessage(null)}>×</button>
+          {toastLibraryUrl && (
+            <a href={toastLibraryUrl} target="_blank" rel="noopener noreferrer" className="halo-toast-library-link" onClick={() => { setToastMessage(null); setToastLibraryUrl(null); }}>
+              Open Library
+            </a>
+          )}
+          <button onClick={() => { setToastMessage(null); setToastLibraryUrl(null); }}>×</button>
         </div>
       )}
 

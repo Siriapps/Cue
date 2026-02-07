@@ -1295,6 +1295,17 @@
   color: white;
 }
 
+.halo-toast-library-link {
+  color: #a78bfa;
+  text-decoration: none;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.halo-toast-library-link:hover {
+  text-decoration: underline;
+}
+
 @keyframes toast-slide-up {
   from {
     opacity: 0;

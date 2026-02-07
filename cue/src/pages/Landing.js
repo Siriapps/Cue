@@ -10,6 +10,7 @@ import sessionDetailsImg from '../assets/session details.jpg';
 import taskAutomationImg from '../assets/task automation.jpg';
 import shinyBg from '../shiny bg.jpg';
 import swirlBg from '../swirl bg.jpg';
+import cueLogo from '../logo.png';
 
 const CAROUSEL_IMAGES = [gmailImg, meetingDashboardImg, predictionImg, sessionDetailsImg, taskAutomationImg];
 
@@ -112,17 +113,7 @@ function Landing() {
       <nav className="landing-nav">
         <div className="landing-brand">
           <div className="landing-logo">
-            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <circle cx="12" cy="12" r="10" fill="url(#landingLogoGrad)" />
-              <path d="M8 12C8 9.79 9.79 8 12 8C14.21 8 16 9.79 16 12" stroke="white" strokeWidth="2" strokeLinecap="round" />
-              <circle cx="12" cy="14" r="2" fill="white" />
-              <defs>
-                <linearGradient id="landingLogoGrad" x1="2" y1="2" x2="22" y2="22">
-                  <stop stopColor="#6366f1" />
-                  <stop offset="1" stopColor="#8b5cf6" />
-                </linearGradient>
-              </defs>
-            </svg>
+            <img src={cueLogo} alt="cue" className="cue-logo-img" />
           </div>
           <span className="landing-brand-text">cue</span>
         </div>
@@ -311,17 +302,7 @@ function Landing() {
       <footer className="landing-footer">
         <div className="footer-content">
           <div className="footer-brand">
-            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" width="24" height="24">
-              <circle cx="12" cy="12" r="10" fill="url(#footerLogoGrad)" />
-              <path d="M8 12C8 9.79 9.79 8 12 8C14.21 8 16 9.79 16 12" stroke="white" strokeWidth="2" strokeLinecap="round" />
-              <circle cx="12" cy="14" r="2" fill="white" />
-              <defs>
-                <linearGradient id="footerLogoGrad" x1="2" y1="2" x2="22" y2="22">
-                  <stop stopColor="#6366f1" />
-                  <stop offset="1" stopColor="#8b5cf6" />
-                </linearGradient>
-              </defs>
-            </svg>
+            <img src={cueLogo} alt="cue" className="cue-logo-img" />
             <span>cue</span>
           </div>
           <p className="footer-text">Powered by Gemini AI</p>
