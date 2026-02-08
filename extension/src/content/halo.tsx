@@ -144,7 +144,9 @@ export function HaloStrip(): React.JSX.Element {
         const p = message.payload as { tasks?: SuggestedTask[] };
         if (p.tasks && p.tasks.length > 0) {
           console.log(`[cue] Setting ${p.tasks.length} predicted tasks`);
-          setPredictedTasks(p.tasks.slice(0, 5)); // Max 5 tasks
+          // Normalize id so dashboard (_id) and extension (id) stay in sync
+          const normalized = p.tasks.slice(0, 5).map((t) => ({ ...t, id: t.id ?? (t as { _id?: string })._id }));
+          setPredictedTasks(normalized);
         }
       }
       // Handle task execution result
@@ -1016,7 +1018,7 @@ export function HaloStrip(): React.JSX.Element {
         <div className="halo-task-panel">
           <div className="task-panel-header">
             <span className="task-panel-title">Suggested Tasks</span>
-            <button className="dismiss-all-btn" onClick={() => { handleDismissAllTasks(); setShowTaskPanel(false); }} title="Dismiss all">
+            <button className="dismiss-all-btn" onClick={() => setShowTaskPanel(false)} title="Close panel">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
                 <line x1="18" y1="6" x2="6" y2="18"/>
                 <line x1="6" y1="6" x2="18" y2="18"/>

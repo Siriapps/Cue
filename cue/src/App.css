@@ -1274,7 +1274,32 @@ body {
 }
 
 .ai-task-card.in-progress-card {
+  position: relative;
   border-left: 3px solid #f59e0b;
+  padding-right: 28px;
+}
+
+.ai-task-card .task-dismiss-x {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.08);
+  color: #64748b;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ai-task-card .task-dismiss-x:hover {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
 }
 
 .ai-task-card.completed-card {
@@ -1784,6 +1809,57 @@ body {
 
 .hub-badge.priority {
   color: #ef4444;
+}
+
+.tasks-completed-count {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 4px 0 8px;
+}
+
+.mosaic-calendar-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  font-size: 12px;
+}
+.mosaic-calendar-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+}
+
+.work-patterns-boxes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.work-pattern-tag {
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(139, 92, 246, 0.15);
+  color: #a78bfa;
+}
+
+.hackathon-count-badge {
+  display: inline-block;
+  min-width: 28px;
+  padding: 4px 8px;
+  border-radius: 50%;
+  background: rgba(139, 92, 246, 0.3);
+  color: #fff;
+  font-weight: 700;
+  text-align: center;
+}
+
+.custom-hub-count {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
 }
 
 .productivity-score-ring {
@@ -5453,4 +5529,718 @@ body {
   .insights-grid {
     grid-template-columns: repeat(2, 1fr);
   }
+}
+
+/* ==========================================
+   MOSAIC LOADING SCREEN
+   ========================================== */
+.mosaic-loading-screen {
+  position: fixed;
+  inset: 0;
+  background: linear-gradient(135deg, #1a1625 0%, #0d0a14 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  animation: loadingFadeIn 0.5s ease-out;
+}
+
+@keyframes loadingFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.mosaic-loading-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 32px;
+  max-width: 360px;
+  width: 100%;
+  padding: 0 24px;
+}
+
+.mosaic-loading-potion {
+  width: 80px;
+  height: 100px;
+  animation: potionFloat 3s ease-in-out infinite;
+}
+
+@keyframes potionFloat {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+.potion-svg {
+  width: 100%;
+  height: 100%;
+  filter: drop-shadow(0 0 16px rgba(139, 92, 246, 0.4));
+}
+
+.mosaic-loading-title {
+  font-size: 22px;
+  font-weight: 600;
+  color: #f9fafb;
+  text-align: center;
+  margin: 0;
+  letter-spacing: -0.3px;
+}
+
+.mosaic-loading-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+}
+
+.mosaic-loading-step {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  transition: all 0.4s ease;
+  opacity: 0.4;
+}
+
+.mosaic-loading-step.active {
+  opacity: 1;
+  background: rgba(139, 92, 246, 0.1);
+  border: 1px solid rgba(139, 92, 246, 0.2);
+}
+
+.mosaic-loading-step.done {
+  opacity: 0.7;
+}
+
+.mosaic-loading-step .step-icon {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.mosaic-loading-step .step-label {
+  font-size: 13px;
+  color: #d1d5db;
+}
+
+.mosaic-loading-step.active .step-label {
+  color: #f9fafb;
+  font-weight: 500;
+}
+
+.mosaic-loading-step.done .step-icon {
+  color: #22c55e;
+}
+
+.mosaic-loading-bar {
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(139, 92, 246, 0.15);
+  overflow: hidden;
+}
+
+.mosaic-loading-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, #8b5cf6, #6366f1, #8b5cf6);
+  background-size: 200% 100%;
+  animation: loadingBarShine 1.5s ease-in-out infinite;
+  transition: width 0.4s ease;
+}
+
+@keyframes loadingBarShine {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ==========================================
+   FOCUS HUB (Central Circle)
+   ========================================== */
+.focus-hub-circle {
+  border-radius: 50% !important;
+  background: radial-gradient(circle at 30% 30%, rgba(139, 92, 246, 0.25) 0%, rgba(24, 20, 40, 0.9) 70%) !important;
+  border: 2px solid rgba(139, 92, 246, 0.4) !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow:
+    0 0 50px rgba(139, 92, 246, 0.25),
+    0 0 100px rgba(139, 92, 246, 0.1),
+    inset 0 0 30px rgba(139, 92, 246, 0.08) !important;
+}
+
+.focus-hub-circle:hover {
+  border-color: rgba(139, 92, 246, 0.6) !important;
+  box-shadow:
+    0 0 60px rgba(139, 92, 246, 0.35),
+    0 0 120px rgba(139, 92, 246, 0.15),
+    inset 0 0 40px rgba(139, 92, 246, 0.12) !important;
+}
+
+.focus-hub-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+  padding: 20px;
+}
+
+.focus-hub-icon {
+  margin-bottom: 4px;
+  opacity: 0.8;
+}
+
+.focus-hub-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: #f9fafb;
+  margin: 0;
+  letter-spacing: -0.3px;
+}
+
+.focus-hub-phase {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: #a78bfa;
+}
+
+.focus-hub-progress {
+  width: 80%;
+  margin-top: 4px;
+}
+
+.focus-progress-bar {
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(139, 92, 246, 0.2);
+  overflow: hidden;
+}
+
+.focus-progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, #8b5cf6, #a78bfa);
+  transition: width 0.4s ease;
+}
+
+/* ==========================================
+   COMMS HUB (Circle)
+   ========================================== */
+.comms-hub-circle {
+  border-radius: 50% !important;
+  background: radial-gradient(circle at 30% 30%, rgba(244, 114, 182, 0.15) 0%, rgba(24, 20, 40, 0.9) 70%) !important;
+  border: 2px solid rgba(244, 114, 182, 0.3) !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow:
+    0 0 40px rgba(244, 114, 182, 0.15),
+    inset 0 0 20px rgba(244, 114, 182, 0.05) !important;
+}
+
+.comms-hub-circle:hover {
+  border-color: rgba(244, 114, 182, 0.5) !important;
+  box-shadow:
+    0 0 50px rgba(244, 114, 182, 0.25),
+    inset 0 0 30px rgba(244, 114, 182, 0.08) !important;
+}
+
+.comms-hub-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+}
+
+.comms-hub-icon {
+  opacity: 0.8;
+}
+
+.comms-hub-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #f9fafb;
+  margin: 0;
+}
+
+.comms-hub-badges {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.comms-avatar-badge {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: rgba(244, 114, 182, 0.25);
+  border: 1px solid rgba(244, 114, 182, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 600;
+  color: #f472b6;
+}
+
+.comms-avatar-badge.more {
+  background: rgba(139, 92, 246, 0.2);
+  border-color: rgba(139, 92, 246, 0.35);
+  color: #a78bfa;
+  font-size: 9px;
+}
+
+/* ==========================================
+   NOTIFICATION CARDS (Gmail / Slack)
+   ========================================== */
+.gmail-notification-card,
+.slack-notification-card {
+  background: rgba(24, 20, 40, 0.9) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  padding: 14px 16px !important;
+}
+
+.gmail-notification-card:hover,
+.slack-notification-card:hover {
+  border-color: rgba(255, 255, 255, 0.15) !important;
+}
+
+.notif-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.notif-card-service {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.gmail-label {
+  background: rgba(234, 67, 53, 0.15);
+  color: #ea4335;
+}
+
+.slack-label {
+  background: rgba(74, 21, 75, 0.3);
+  color: #e01e5a;
+}
+
+.notif-card-time {
+  font-size: 11px;
+  color: #9ca3af;
+}
+
+.notif-card-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #6b7280;
+}
+
+.notif-card-status-dot.online {
+  background: #22c55e;
+  box-shadow: 0 0 6px rgba(34, 197, 94, 0.5);
+}
+
+.notif-card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #f9fafb;
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.notif-card-snippet {
+  font-size: 12px;
+  color: #9ca3af;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ==========================================
+   DOC CARD HUB
+   ========================================== */
+.doc-card-hub {
+  cursor: pointer;
+  background: rgba(24, 20, 40, 0.9) !important;
+  border: 1px solid rgba(66, 133, 244, 0.2) !important;
+}
+
+.doc-card-hub:hover {
+  border-color: rgba(66, 133, 244, 0.4) !important;
+}
+
+.doc-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.doc-card-icon {
+  font-size: 18px;
+}
+
+.doc-card-type {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #60a5fa;
+}
+
+.doc-card-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #f9fafb;
+  margin: 0 0 4px 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.doc-card-desc {
+  font-size: 12px;
+  color: #9ca3af;
+  margin: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ==========================================
+   ICON HUBS (GitHub, Join)
+   ========================================== */
+.icon-hub {
+  border-radius: 50% !important;
+  padding: 0 !important;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  background: rgba(24, 20, 40, 0.85) !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3) !important;
+}
+
+.icon-hub:hover {
+  border-color: rgba(255, 255, 255, 0.25) !important;
+  transform: scale(1.1) translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4) !important;
+}
+
+.github-icon-hub svg {
+  opacity: 0.8;
+}
+
+.github-icon-hub:hover svg {
+  opacity: 1;
+}
+
+.join-btn-hub {
+  border-color: rgba(52, 168, 83, 0.3) !important;
+  background: rgba(52, 168, 83, 0.1) !important;
+}
+
+.join-btn-hub:hover {
+  border-color: rgba(52, 168, 83, 0.5) !important;
+  background: rgba(52, 168, 83, 0.15) !important;
+}
+
+.join-label {
+  font-size: 9px;
+  font-weight: 600;
+  color: #34a853;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* ==========================================
+   TO DO HUB
+   ========================================== */
+.todo-hub {
+  cursor: pointer;
+}
+
+.todo-hub-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.todo-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #8b5cf6, #6366f1);
+  box-shadow: 0 0 8px rgba(139, 92, 246, 0.4);
+}
+
+.todo-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #f9fafb;
+}
+
+.todo-items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.todo-checkbox-item {
+  padding: 4px 0 !important;
+}
+
+.todo-checkbox {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  border: 1.5px solid rgba(139, 92, 246, 0.4);
+  flex-shrink: 0;
+  background: transparent;
+}
+
+/* ==========================================
+   EVENT CARDS
+   ========================================== */
+.event-card-hub {
+  padding: 12px 14px !important;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  background: rgba(24, 20, 40, 0.85) !important;
+  border: 1px solid rgba(66, 133, 244, 0.2) !important;
+}
+
+.event-card-hub:hover {
+  border-color: rgba(66, 133, 244, 0.4) !important;
+}
+
+.event-card-time {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: #9ca3af;
+}
+
+.event-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.event-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #f9fafb;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.event-card-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+/* ==========================================
+   TODAY DATE WIDGET
+   ========================================== */
+.today-widget {
+  border-radius: 50% !important;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  background: radial-gradient(circle at 40% 40%, rgba(99, 102, 241, 0.15) 0%, rgba(24, 20, 40, 0.9) 70%) !important;
+  border: 2px solid rgba(99, 102, 241, 0.3) !important;
+  box-shadow: 0 0 30px rgba(99, 102, 241, 0.15) !important;
+}
+
+.today-widget:hover {
+  border-color: rgba(99, 102, 241, 0.5) !important;
+}
+
+.today-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  color: #818cf8;
+}
+
+.today-day {
+  font-size: 42px;
+  font-weight: 800;
+  color: #f9fafb;
+  line-height: 1;
+}
+
+.today-month {
+  font-size: 12px;
+  font-weight: 500;
+  color: #9ca3af;
+  text-transform: capitalize;
+}
+
+/* ==========================================
+   ACTIVITY GRID (GitHub-style)
+   ========================================== */
+.productivity-activity-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 8px 0;
+}
+
+.productivity-activity-grid.expanded {
+  gap: 4px;
+  margin: 12px 0;
+}
+
+.activity-grid-row {
+  display: flex;
+  gap: 3px;
+}
+
+.productivity-activity-grid.expanded .activity-grid-row {
+  gap: 4px;
+}
+
+.activity-grid-cell {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  background: rgba(139, 92, 246, 0.08);
+  transition: background 0.2s;
+}
+
+.productivity-activity-grid.expanded .activity-grid-cell {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+}
+
+.activity-grid-cell.level-0 {
+  background: rgba(139, 92, 246, 0.06);
+}
+
+.activity-grid-cell.level-1 {
+  background: rgba(139, 92, 246, 0.25);
+}
+
+.activity-grid-cell.level-2 {
+  background: rgba(139, 92, 246, 0.5);
+}
+
+.activity-grid-cell.level-3 {
+  background: rgba(139, 92, 246, 0.8);
+  box-shadow: 0 0 6px rgba(139, 92, 246, 0.3);
+}
+
+/* ==========================================
+   HOBBY SECTION (Productivity Hub)
+   ========================================== */
+.productivity-hobby {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 0;
+  margin-top: 4px;
+  border-top: 1px solid rgba(139, 92, 246, 0.1);
+}
+
+.hobby-label {
+  font-size: 11px;
+  color: #d1d5db;
+  font-weight: 500;
+}
+
+.hobby-streak {
+  font-size: 11px;
+  color: #fbbf24;
+  font-weight: 600;
+}
+
+.hobby-expanded {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: rgba(139, 92, 246, 0.08);
+  border: 1px solid rgba(139, 92, 246, 0.15);
+  border-radius: 12px;
+  margin-top: 8px;
+}
+
+.hobby-label-lg {
+  font-size: 16px;
+  font-weight: 600;
+  color: #f9fafb;
+}
+
+.hobby-streak-lg {
+  font-size: 16px;
+  font-weight: 600;
+  color: #fbbf24;
+}
+
+/* ==========================================
+   EXPAND PANEL REFRESH BUTTON
+   ========================================== */
+.mosaic-expand-refresh {
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  border: 1px solid rgba(139, 92, 246, 0.3);
+  border-radius: 8px;
+  background: rgba(139, 92, 246, 0.1);
+  color: #a78bfa;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-bottom: 12px;
+}
+
+.mosaic-expand-refresh:hover:not(:disabled) {
+  background: rgba(139, 92, 246, 0.2);
+  border-color: rgba(139, 92, 246, 0.5);
+}
+
+.mosaic-expand-refresh:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }

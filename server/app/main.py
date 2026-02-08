@@ -1159,11 +1159,27 @@ async def mosaic_comms(payload: MosaicCommsRequest) -> Dict[str, Any]:
     if gmail_summary or what_to_do:
         _mosaic_comms_cache[cache_key] = (gmail_summary, what_to_do, now_ts + MOSAIC_CACHE_TTL_SECONDS)
 
+    # Work patterns: once per session, derive from recent activity (top services as labels)
+    work_patterns: List[Dict[str, Any]] = []
+    try:
+        recent = list_google_activity_recent(limit=50)
+        counts: Dict[str, int] = {}
+        for a in recent:
+            s = (a.get("service") or "other").lower()
+            counts[s] = counts.get(s, 0) + 1
+        work_patterns = [
+            {"name": svc, "count": c}
+            for svc, c in sorted(counts.items(), key=lambda x: -x[1])[:5]
+        ]
+    except Exception:
+        pass
+
     return {
         "gmail_unread_count": gmail_unread_count,
         "gmail_summary": gmail_summary,
         "what_to_do": what_to_do,
         "calendar_upcoming": calendar_upcoming,
+        "work_patterns": work_patterns,
     }
 
 
@@ -1215,23 +1231,30 @@ async def execute_command(payload: CommandRequest) -> Dict[str, Any]:
     # SHORTCUT: If suggested_params are provided (from task suggestions), skip Gemini parsing entirely
     if payload.suggested_params and isinstance(payload.suggested_params, dict):
         params = dict(payload.suggested_params)
-        # Infer action from command string first word
-        cmd_words = command.lower().split() if command else []
-        first_word = cmd_words[0] if cmd_words else "draft"
-        QUICK_ALIASES = {
-            "gmail": {"generate": "draft", "create": "draft", "compose": "draft", "write": "draft", "make": "draft", "send": "send", "draft": "draft"},
-            "calendar": {"schedule": "create", "add": "create", "book": "create", "make": "create", "create": "create"},
-            "tasks": {"create": "add", "new": "add", "make": "add", "add": "add"},
-            "docs": {"generate": "create", "new": "create", "write": "create", "make": "create", "create": "create"},
-            "sheets": {"generate": "create", "new": "create", "make": "create", "create": "create"},
-            "drive": {"list": "list", "find": "find", "create": "create"},
-        }
-        if service in QUICK_ALIASES and first_word in QUICK_ALIASES[service]:
-            action = QUICK_ALIASES[service][first_word]
-        elif first_word in ["draft", "send", "list", "read", "create", "delete", "add", "complete", "find"]:
-            action = first_word
+        # Extract explicit action if the caller included it (e.g., from task.action)
+        explicit_action = params.pop("_action", None)
+        if explicit_action and isinstance(explicit_action, str):
+            action = explicit_action.strip()
         else:
-            action = "draft" if service == "gmail" else "create"
+            # Fallback: infer action from command string first word
+            cmd_words = command.lower().split() if command else []
+            first_word = cmd_words[0] if cmd_words else "draft"
+            QUICK_ALIASES = {
+                "gmail": {"generate": "draft", "create": "draft", "compose": "draft", "write": "draft", "make": "draft", "send": "send", "draft": "draft"},
+                "calendar": {"schedule": "create", "add": "create", "book": "create", "make": "create", "create": "create"},
+                "tasks": {"create": "add", "new": "add", "make": "add", "add": "add"},
+                "docs": {"generate": "create", "new": "create", "write": "create", "make": "create", "create": "create"},
+                "sheets": {"generate": "create", "new": "create", "make": "create", "create": "create"},
+                "drive": {"list": "list", "find": "find", "create": "create"},
+            }
+            if service in QUICK_ALIASES and first_word in QUICK_ALIASES[service]:
+                action = QUICK_ALIASES[service][first_word]
+            elif first_word in ["draft", "send", "list", "read", "create", "delete", "add", "complete", "find"]:
+                action = first_word
+            else:
+                # Per-service defaults
+                SERVICE_DEFAULTS = {"gmail": "draft", "calendar": "create", "tasks": "add", "docs": "create", "sheets": "create", "drive": "list"}
+                action = SERVICE_DEFAULTS.get(service, "create")
         print(f"[cue] Using pre-built params (skipping Gemini): service={service}, action={action}, params={list(params.keys())}")
 
     # Only call Gemini to parse if we don't have pre-built params

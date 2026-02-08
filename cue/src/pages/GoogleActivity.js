@@ -25,13 +25,19 @@ const getServiceUrl = (service, openUrl) => {
 
 function GoogleActivity({ lastActivityUpdate = 0, user }) {
   const [activities, setActivities] = useState([]);
-  const [inProgressTasks, setInProgressTasks] = useState([]);
-  const [queueTasks, setQueueTasks] = useState([]);
-  const [completedTasks, setCompletedTasks] = useState([]);
+  const [taskColumns, setTaskColumns] = useState({
+    queue: [],
+    inProgress: [],
+    completed: [],
+  });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [acceptErrorToast, setAcceptErrorToast] = useState(null);
   const [acceptingId, setAcceptingId] = useState(null);
+
+  const queueTasks = taskColumns.queue;
+  const inProgressTasks = taskColumns.inProgress;
+  const completedTasks = taskColumns.completed;
 
   // Edit modal state
   const [editingTask, setEditingTask] = useState(null);
@@ -51,9 +57,11 @@ function GoogleActivity({ lastActivityUpdate = 0, user }) {
       const inProgressData = queueRes.ok ? (await queueRes.json()).tasks || [] : [];
       const completedData = completedRes.ok ? (await completedRes.json()).tasks || [] : [];
       setActivities(activitiesData);
-      setQueueTasks(pendingData);
-      setInProgressTasks(inProgressData);
-      setCompletedTasks(completedData);
+      setTaskColumns({
+        queue: pendingData,
+        inProgress: inProgressData,
+        completed: completedData,
+      });
       setError(null);
     } catch (e) {
       setError(e.message);
@@ -98,9 +106,11 @@ function GoogleActivity({ lastActivityUpdate = 0, user }) {
             const msg = JSON.parse(event.data);
             if (msg.type === 'TASKS_UPDATED' && Array.isArray(msg.tasks)) {
               const tasks = msg.tasks;
-              setQueueTasks(tasks.filter((t) => (t.status || '') === 'pending'));
-              setInProgressTasks(tasks.filter((t) => (t.status || '') === 'in_progress'));
-              setCompletedTasks(tasks.filter((t) => (t.status || '') === 'completed'));
+              setTaskColumns({
+                queue: tasks.filter((t) => (t.status || '') === 'pending'),
+                inProgress: tasks.filter((t) => (t.status || '') === 'in_progress'),
+                completed: tasks.filter((t) => (t.status || '') === 'completed'),
+              });
             }
           } catch (e) {}
         };
@@ -131,11 +141,39 @@ function GoogleActivity({ lastActivityUpdate = 0, user }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'in_progress' }),
       });
-      setQueueTasks((prev) => prev.filter((t) => t._id !== taskId));
-      setInProgressTasks((prev) => [...prev, { ...task, status: 'in_progress' }]);
+      setTaskColumns((prev) => ({
+        ...prev,
+        queue: prev.queue.filter((t) => t._id !== taskId),
+        inProgress: [...prev.inProgress, { ...task, status: 'in_progress' }],
+      }));
 
       const service = (task.service || 'gmail').toLowerCase();
       const command = task.description || task.title || '';
+
+      // URL-only services: open the URL and mark completed without calling execute_command
+      const URL_SERVICES = {
+        gemini_chat: (p) => `https://gemini.google.com/app?q=${encodeURIComponent(p?.prompt || command)}`,
+        antigravity: () => 'antigravity://',
+        openai_studio: (p) => `https://chat.openai.com/?q=${encodeURIComponent(p?.prompt || command)}`,
+      };
+      if (URL_SERVICES[service]) {
+        const openUrl = URL_SERVICES[service](task.params);
+        window.open(openUrl, '_blank');
+        await fetch(`${ADK_API_URL}/suggested_tasks/${taskId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'completed', open_url: openUrl }),
+        });
+        setTaskColumns((prev) => ({
+          ...prev,
+          inProgress: prev.inProgress.filter((t) => t._id !== taskId),
+          completed: [{ ...task, status: 'completed', open_url: openUrl }, ...prev.completed],
+        }));
+        return;
+      }
+
+      // Include task.action in suggested_params so backend doesn't have to re-infer it
+      const paramsWithAction = { ...(task.params || {}), _action: task.action || null };
       const execRes = await fetch(`${ADK_API_URL}/execute_command`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -144,7 +182,7 @@ function GoogleActivity({ lastActivityUpdate = 0, user }) {
           command,
           user_token: token,
           confirm: true,
-          suggested_params: task.params || {},
+          suggested_params: paramsWithAction,
           user_display_name: user?.name || '',
           user_email: user?.email || '',
         }),
@@ -160,39 +198,38 @@ function GoogleActivity({ lastActivityUpdate = 0, user }) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ status: 'completed', open_url: result?.open_url || '' }),
         });
-        setInProgressTasks((prev) => prev.filter((t) => t._id !== taskId));
-        setCompletedTasks((prev) => [{ ...task, status: 'completed', open_url: result?.open_url }, ...prev]);
+        setTaskColumns((prev) => ({
+          ...prev,
+          inProgress: prev.inProgress.filter((t) => t._id !== taskId),
+          completed: [{ ...task, status: 'completed', open_url: result?.open_url }, ...prev.completed],
+        }));
       } else {
         // Execution failed (API error, quota, etc.) — keep in AI Queue
         console.warn('[GoogleActivity] Task execution failed:', result.error);
         setError(`Task couldn't be executed: ${result.error || 'API error'}. It's in the AI Queue for retry.`);
         setTimeout(() => setError(null), 5000);
       }
-      fetchAll(true);
     } catch (err) {
       console.error('[GoogleActivity] accept error:', err);
-      // Keep task in AI Queue (in_progress), don't move back to pending
       setError('Action couldn\'t be completed. Task is in the AI Queue for retry.');
       setTimeout(() => setError(null), 5000);
-      fetchAll(true);
     } finally {
       setAcceptingId(null);
     }
   };
 
-  const handleDismiss = async (taskId) => {
-    try {
-      await fetch(`${ADK_API_URL}/suggested_tasks/${taskId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'dismissed' }),
-      });
-      setQueueTasks((prev) => prev.filter((t) => t._id !== taskId));
-      setInProgressTasks((prev) => prev.filter((t) => t._id !== taskId));
-      fetchAll(true);
-    } catch (err) {
-      console.error('[GoogleActivity] dismiss error:', err);
-    }
+  const handleDismiss = (taskId) => {
+    // Update UI immediately (no loading, no fetch); persist in background
+    setTaskColumns((prev) => ({
+      ...prev,
+      queue: prev.queue.filter((t) => t._id !== taskId),
+      inProgress: prev.inProgress.filter((t) => t._id !== taskId),
+    }));
+    fetch(`${ADK_API_URL}/suggested_tasks/${taskId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'dismissed' }),
+    }).catch(() => {});
   };
 
   // Edit task handlers
@@ -456,6 +493,15 @@ function GoogleActivity({ lastActivityUpdate = 0, user }) {
             ) : (
               inProgressTasks.map((task) => (
                 <div key={task._id} className="ai-task-card in-progress-card glass-card">
+                  <button
+                    type="button"
+                    className="task-dismiss-x"
+                    onClick={(e) => { e.stopPropagation(); handleDismiss(task._id); }}
+                    title="Remove from queue"
+                    aria-label="Remove task"
+                  >
+                    ×
+                  </button>
                   <h4 className="ai-task-card-title">{task.title || task.description || 'Task'}</h4>
                   <p className="ai-task-card-subtitle">{task.service || 'general'}</p>
                   <p className="ai-task-card-status">Executing…</p>

@@ -1205,7 +1205,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           } else if (service === "antigravity") {
             // Open Antigravity web app and copy prompt to clipboard
             // User can paste into desktop app or use web version
-            url = `https://labs.google.com/search`;
+            url = `antigravity://`;
             userMessage = "Prompt copied! Open Antigravity desktop app and paste (Ctrl+V), or use the web version";
           } else if (service === "openai_studio") {
             url = `https://chat.openai.com/`;
@@ -1278,7 +1278,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             command,
             user_token: userToken,
             confirm: true, // Execute directly
-            suggested_params: params, // Pass pre-built params
+            suggested_params: { ...(params || {}), _action: action }, // Pass pre-built params with explicit action
             page_title: tab?.title ?? "",
             current_url: tab?.url ?? "",
           }),
