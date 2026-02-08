@@ -139,6 +139,11 @@ class ProcessAudioChunkRequest(BaseModel):
     source_url: Optional[str] = None
 
 
+class ConversationMessage(BaseModel):
+    role: str  # "user" or "assistant"
+    text: str
+
+
 class AskAIRequest(BaseModel):
     query: str
     page_title: Optional[str] = None
@@ -146,6 +151,8 @@ class AskAIRequest(BaseModel):
     selected_text: Optional[str] = None
     # Extra context sent explicitly by the user/client (e.g. recent searches / chat snippets)
     context_blob: Optional[str] = None
+    # Previous conversation turns for context (voice chat popup)
+    conversation_history: Optional[List[ConversationMessage]] = None
 
 
 class PoseRequest(BaseModel):
@@ -222,6 +229,7 @@ async def ask_ai_endpoint(payload: AskAIRequest) -> Dict[str, Any]:
         "current_url": payload.current_url or "",
         "selected_text": payload.selected_text or "",
         "context_blob": (payload.context_blob or ""),
+        "conversation_history": [{"role": m.role, "text": m.text} for m in (payload.conversation_history or [])],
     }
     result = ask_ai(payload.query, context)
     return result

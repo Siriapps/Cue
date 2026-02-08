@@ -44,7 +44,9 @@ def call_gemini(
     parts: List[Dict[str, Any]],
     system_prompt: Optional[str] = None,
     response_mime_type: str = "application/json",
+    chat_history: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
+    """Call Gemini. chat_history: list of {role: 'user'|'assistant', text: str} for multi-turn context."""
     global _api_call_count
     _api_call_count += 1
     
@@ -64,8 +66,19 @@ def call_gemini(
         f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     )
 
+    # Build contents: chat history (user/model turns) + current user message
+    contents: List[Dict[str, Any]] = []
+    if chat_history:
+        for msg in chat_history:
+            role = msg.get("role", "user")
+            gemini_role = "model" if role == "assistant" else "user"
+            text = msg.get("text", "")
+            if text:
+                contents.append({"role": gemini_role, "parts": [{"text": text}]})
+    contents.append({"role": "user", "parts": parts})
+
     payload: Dict[str, Any] = {
-        "contents": [{"role": "user", "parts": parts}],
+        "contents": contents,
         "generationConfig": {"responseMimeType": response_mime_type},
     }
     if system_prompt:

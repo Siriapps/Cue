@@ -11,11 +11,12 @@ Be friendly, clear, and to the point (2-4 sentences unless more detail is needed
 
 
 def ask_ai(query: str, context: Dict[str, Any]) -> Dict[str, Any]:
-    """Answer a user's question using Gemini 2.5 Flash."""
+    """Answer a user's question using Gemini 2.5 Flash. Uses conversation history for context."""
     page_title = context.get("page_title", "")
     current_url = context.get("current_url", "")
     selected_text = context.get("selected_text", "")
     context_blob = context.get("context_blob", "")
+    conversation_history = context.get("conversation_history") or []
     
     context_text = f"You are on: {page_title}\nURL: {current_url}"
     if selected_text:
@@ -29,7 +30,12 @@ def ask_ai(query: str, context: Dict[str, Any]) -> Dict[str, Any]:
     prompt = f"{context_text}\n\nUser's question: {query}\n\nProvide a helpful answer."
     
     parts = [{"text": prompt}]
-    result = call_gemini(parts=parts, system_prompt=ASK_AI_PROMPT, response_mime_type="text/plain")
+    result = call_gemini(
+        parts=parts,
+        system_prompt=ASK_AI_PROMPT,
+        response_mime_type="text/plain",
+        chat_history=conversation_history,
+    )
     
     # Extract answer from result
     if "raw_text" in result:

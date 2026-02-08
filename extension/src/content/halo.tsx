@@ -2,10 +2,15 @@ import React, { useEffect, useMemo, useState, useCallback, useRef } from "react"
 import { startGoLive, stopGoLive } from "./go_live";
 import { summarizePage } from "./readability";
 import { startMicRecording, pauseMicRecording, resumeMicRecording, stopMicRecording } from "./session_recorder";
+import { startVoiceActivation, stopVoiceActivation, isVoiceActivationListening, getWakePhrase, setWakePhrase, isSpeechRecognitionSupported } from "./voice_activation";
+import { openVoiceChatPopup } from "./voice_chat_popup";
 import type { CueContext } from "../shared/context_store";
 
 const LIBRARY_URL = "http://localhost:3001";
 const INCLUDE_CONTEXT_STORAGE_KEY = "cue_include_context_for_ai_v1";
+const AUTO_SUGGEST_DELAY_KEY = "cue_auto_suggest_delay_ms_v1";
+const LAST_SUGGESTIONS_KEY = "cue_last_suggestions_v1";
+const VOICE_ACTIVATION_ENABLED_KEY = "cue_voice_activation_enabled_v1";
 
 type SessionState = "idle" | "recording" | "paused";
 
@@ -21,8 +26,10 @@ export function HaloStrip(): React.JSX.Element {
   // Local context UI
   const [contextSnapshot, setContextSnapshot] = useState<CueContext | null>(null);
   const [includeContextForAI, setIncludeContextForAI] = useState(false);
+  const [autoSuggestDelayMs, setAutoSuggestDelayMs] = useState(60_000);
   const [suggestionText, setSuggestionText] = useState<string | null>(null);
   const [isSuggesting, setIsSuggesting] = useState(false);
+  const [savedSuggestions, setSavedSuggestions] = useState<string[]>([]);
 
   // Session Recording State
   const [sessionState, setSessionState] = useState<SessionState>("idle");
@@ -32,6 +39,12 @@ export function HaloStrip(): React.JSX.Element {
 
   // Go Live State
   const [isLive, setIsLive] = useState(false);
+
+  // Voice Activation State
+  const [voiceActivationEnabled, setVoiceActivationEnabled] = useState(false);
+  const [isVoiceListening, setIsVoiceListening] = useState(false);
+  const [wakePhrase, setWakePhraseState] = useState("hey cue help me");
+  const [wakePhraseInput, setWakePhraseInput] = useState("");
 
   const loadContextSnapshot = useCallback(() => {
     try {
@@ -49,13 +62,27 @@ export function HaloStrip(): React.JSX.Element {
     }
   }, []);
 
-  // Load collapsed state + include-context preference
+  const loadSavedSuggestions = useCallback(() => {
+    try {
+      if (!chrome?.storage?.local) return;
+      chrome.storage.local.get([LAST_SUGGESTIONS_KEY], (res) => {
+        const saved = res?.[LAST_SUGGESTIONS_KEY];
+        if (saved?.items?.length) {
+          setSavedSuggestions(saved.items.slice(0, 5));
+        }
+      });
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  // Load collapsed state + include-context preference + voice activation
   useEffect(() => {
     try {
       if (!chrome?.storage?.local) {
         throw new Error("Extension context invalidated");
       }
-      chrome.storage.local.get(["haloCollapsed", INCLUDE_CONTEXT_STORAGE_KEY], (result) => {
+      chrome.storage.local.get(["haloCollapsed", INCLUDE_CONTEXT_STORAGE_KEY, AUTO_SUGGEST_DELAY_KEY, VOICE_ACTIVATION_ENABLED_KEY], (result) => {
         if (chrome.runtime.lastError) {
           console.error("[cue] Failed to load collapsed state:", chrome.runtime.lastError.message);
           return;
@@ -66,10 +93,43 @@ export function HaloStrip(): React.JSX.Element {
         if (result[INCLUDE_CONTEXT_STORAGE_KEY] !== undefined) {
           setIncludeContextForAI(!!result[INCLUDE_CONTEXT_STORAGE_KEY]);
         }
+        if (result[AUTO_SUGGEST_DELAY_KEY] !== undefined && typeof result[AUTO_SUGGEST_DELAY_KEY] === "number") {
+          setAutoSuggestDelayMs(result[AUTO_SUGGEST_DELAY_KEY]);
+        }
+        // Load voice activation state
+        if (result[VOICE_ACTIVATION_ENABLED_KEY] !== undefined) {
+          const enabled = !!result[VOICE_ACTIVATION_ENABLED_KEY];
+          setVoiceActivationEnabled(enabled);
+          if (enabled && isSpeechRecognitionSupported()) {
+            startVoiceActivation().then((started) => {
+              setIsVoiceListening(started);
+            });
+          }
+        }
+      });
+
+      // Load wake phrase
+      getWakePhrase().then((phrase) => {
+        setWakePhraseState(phrase);
+        setWakePhraseInput(phrase);
       });
     } catch (error: any) {
       console.error("[cue] Extension context invalidated:", error.message);
     }
+  }, []);
+
+  // Listen for voice activation events
+  useEffect(() => {
+    const handleListeningStarted = () => setIsVoiceListening(true);
+    const handleListeningStopped = () => setIsVoiceListening(false);
+
+    window.addEventListener("cue:voice-listening-started", handleListeningStarted);
+    window.addEventListener("cue:voice-listening-stopped", handleListeningStopped);
+
+    return () => {
+      window.removeEventListener("cue:voice-listening-started", handleListeningStarted);
+      window.removeEventListener("cue:voice-listening-stopped", handleListeningStopped);
+    };
   }, []);
 
   // Timer effect for recording
@@ -138,6 +198,7 @@ export function HaloStrip(): React.JSX.Element {
       const next = !prev;
       if (next) {
         loadContextSnapshot();
+        loadSavedSuggestions();
       } else {
         setSuggestionText(null);
         setIsSuggesting(false);
@@ -158,6 +219,62 @@ export function HaloStrip(): React.JSX.Element {
     } catch {
       // ignore
     }
+  };
+
+  const setAutoSuggestDelayPreference = (nextMs: number) => {
+    const ms = Math.max(5_000, nextMs);
+    setAutoSuggestDelayMs(ms);
+    try {
+      if (!chrome?.storage?.local) {
+        throw new Error("Extension context invalidated");
+      }
+      chrome.storage.local.set({ [AUTO_SUGGEST_DELAY_KEY]: ms }, () => {
+        // ignore
+      });
+    } catch {
+      // ignore
+    }
+  };
+
+  const toggleVoiceActivation = async () => {
+    // If enabled but not listening (e.g. after no-speech restart failure), click = retry
+    if (voiceActivationEnabled && !isVoiceListening) {
+      const started = await startVoiceActivation();
+      setIsVoiceListening(started);
+      return;
+    }
+    
+    const newState = !voiceActivationEnabled;
+    setVoiceActivationEnabled(newState);
+    
+    try {
+      if (!chrome?.storage?.local) {
+        throw new Error("Extension context invalidated");
+      }
+      chrome.storage.local.set({ [VOICE_ACTIVATION_ENABLED_KEY]: newState });
+    } catch {
+      // ignore
+    }
+
+    if (newState) {
+      const started = await startVoiceActivation();
+      setIsVoiceListening(started);
+    } else {
+      stopVoiceActivation();
+      setIsVoiceListening(false);
+    }
+  };
+
+  const handleWakePhraseChange = async () => {
+    const trimmed = wakePhraseInput.trim().toLowerCase();
+    if (trimmed && trimmed !== wakePhrase) {
+      await setWakePhrase(trimmed);
+      setWakePhraseState(trimmed);
+    }
+  };
+
+  const handleOpenVoiceChat = () => {
+    openVoiceChatPopup();
   };
 
   const refreshSearches = () => {
@@ -471,6 +588,53 @@ export function HaloStrip(): React.JSX.Element {
     }
   }, []);
 
+  // Listen for cue:open-chat event from suggestions
+  useEffect(() => {
+    const handleOpenChat = (e: CustomEvent<{ prompt: string }>) => {
+      const prompt = e.detail?.prompt;
+      if (prompt) {
+        setChatOpen(true);
+        setQuery(prompt);
+        // Automatically send the query
+        setIsThinking(true);
+        setAiAnswer(null);
+        try {
+          if (!chrome?.runtime?.id) {
+            throw new Error("Extension context invalidated");
+          }
+          chrome.runtime.sendMessage(
+            {
+              type: "ASK_AI",
+              query: prompt,
+              selectedText: "",
+              includeContext: includeContextForAI,
+            },
+            (response) => {
+              setIsThinking(false);
+              if (chrome.runtime.lastError) {
+                setAiAnswer("Extension context invalidated. Please reload the page.");
+                return;
+              }
+              if (response?.success && response?.answer) {
+                setAiAnswer(response.answer);
+              } else {
+                setAiAnswer(response?.error || "Failed to get AI response");
+              }
+            }
+          );
+        } catch (error: any) {
+          setIsThinking(false);
+          setAiAnswer("Extension context invalidated. Please reload the page.");
+        }
+      }
+    };
+
+    window.addEventListener("cue:open-chat", handleOpenChat as EventListener);
+    return () => {
+      window.removeEventListener("cue:open-chat", handleOpenChat as EventListener);
+    };
+  }, [includeContextForAI]);
+
   // Collapsed view - floating icon in top-right
   // Uses fixed positioning since parent host is centered
   if (isCollapsed) {
@@ -600,6 +764,15 @@ export function HaloStrip(): React.JSX.Element {
           <span>Ask AI</span>
         </button>
 
+        {/* Hey Cue Button */}
+        <button className="halo-btn ask-ai" onClick={handleOpenVoiceChat} title="Open voice chat (or say your wake phrase)">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+            <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
+            <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+          </svg>
+          <span>Hey Cue</span>
+        </button>
+
         {/* Library Button */}
         <button className="halo-btn library" onClick={openLibrary}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
@@ -682,6 +855,73 @@ export function HaloStrip(): React.JSX.Element {
             </label>
           </div>
 
+          <div className="context-row">
+            <label className="context-toggle">
+              <span>Auto suggestions after</span>
+              <select
+                className="context-select"
+                value={autoSuggestDelayMs}
+                onChange={(e) => setAutoSuggestDelayPreference(parseInt(e.target.value, 10))}
+              >
+                <option value={30_000}>30 seconds</option>
+                <option value={60_000}>1 minute</option>
+                <option value={120_000}>2 minutes</option>
+              </select>
+              <span>on search pages</span>
+            </label>
+          </div>
+
+          {/* Voice Activation Section */}
+          {isSpeechRecognitionSupported() && (
+            <div className="context-section">
+              <div className="context-section-title">
+                <span>🎤 Voice Activation</span>
+              </div>
+              
+              <div className="context-row" style={{ gap: '12px', flexDirection: 'column', alignItems: 'stretch' }}>
+                {/* Toggle Voice Activation */}
+                <div
+                  className={`voice-activation-toggle ${voiceActivationEnabled ? '' : 'inactive'}`}
+                  onClick={toggleVoiceActivation}
+                  role="button"
+                  tabIndex={0}
+                >
+                  <div className="voice-activation-dot"></div>
+                  <span className="voice-activation-text">
+                    {voiceActivationEnabled 
+                      ? (isVoiceListening ? 'Listening for wake phrase...' : 'Click to resume listening')
+                      : 'Voice activation disabled'
+                    }
+                  </span>
+                </div>
+
+                {/* Wake Phrase Input */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '13px', color: '#374151', whiteSpace: 'nowrap' }}>Wake phrase:</span>
+                  <input
+                    type="text"
+                    className="wake-phrase-input"
+                    value={wakePhraseInput}
+                    onChange={(e) => setWakePhraseInput(e.target.value)}
+                    onBlur={handleWakePhraseChange}
+                    onKeyDown={(e) => {
+                      e.stopPropagation();
+                      if (e.key === 'Enter') {
+                        handleWakePhraseChange();
+                        (e.target as HTMLInputElement).blur();
+                      }
+                    }}
+                    placeholder="hey cue help me"
+                  />
+                </div>
+
+                <div style={{ fontSize: '12px', color: '#6b7280' }}>
+                  Say "{wakePhrase}" to open the voice chat popup
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="context-actions">
             <button className="halo-btn context-action" onClick={refreshSearches}>
               Refresh searches
@@ -693,6 +933,63 @@ export function HaloStrip(): React.JSX.Element {
               Suggest
             </button>
           </div>
+
+          {/* Saved Suggestions Section */}
+          {savedSuggestions.length > 0 && (
+            <div className="context-section">
+              <div className="context-section-title">
+                <span>💡 Your Suggestions</span>
+              </div>
+              <div className="context-suggestions-grid">
+                {savedSuggestions.map((s, i) => (
+                  <button
+                    key={i}
+                    className="context-suggestion-card"
+                    onClick={() => {
+                      setContextOpen(false);
+                      setChatOpen(true);
+                      setQuery(s);
+                      // Auto-send the suggestion
+                      setIsThinking(true);
+                      setAiAnswer(null);
+                      try {
+                        if (!chrome?.runtime?.id) {
+                          throw new Error("Extension context invalidated");
+                        }
+                        chrome.runtime.sendMessage(
+                          {
+                            type: "ASK_AI",
+                            query: s,
+                            selectedText: "",
+                            includeContext: includeContextForAI,
+                          },
+                          (response) => {
+                            setIsThinking(false);
+                            if (chrome.runtime.lastError) {
+                              setAiAnswer("Extension context invalidated. Please reload the page.");
+                              return;
+                            }
+                            if (response?.success && response?.answer) {
+                              setAiAnswer(response.answer);
+                            } else {
+                              setAiAnswer(response?.error || "Failed to get AI response");
+                            }
+                          }
+                        );
+                      } catch (error: any) {
+                        setIsThinking(false);
+                        setAiAnswer("Extension context invalidated. Please reload the page.");
+                      }
+                    }}
+                    title="Click to start chat"
+                  >
+                    <span className="context-suggestion-number">{i + 1}</span>
+                    <span className="context-suggestion-text">{s}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="context-section">
             <div className="context-section-title">Recent searches</div>

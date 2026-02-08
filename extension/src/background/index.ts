@@ -5,6 +5,7 @@ import {
   getCueContext,
   mergeChatMessages,
   setRecentSearches,
+  type CueContext,
   type SearchEntry,
 } from "../shared/context_store";
 
@@ -32,6 +33,62 @@ let sessionInfo: {
 // using navigator.mediaDevices.getUserMedia() - no offscreen documents needed!
 
 // ================== LOCAL CONTEXT (SEARCH + AI CHAT) ==================
+
+const CONTEXT_MAINTENANCE_KEY = "cue_context_maintenance_v1";
+const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+function startOfTodayMs(): number {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+function filterContextToToday(ctx: CueContext): CueContext {
+  const cutoff = startOfTodayMs();
+  const recent_searches = (ctx.recent_searches || []).filter((s) => (s.visitedAt || 0) >= cutoff);
+
+  const recent_ai_chats: Record<string, any[]> = {};
+  for (const [host, msgs] of Object.entries(ctx.recent_ai_chats || {})) {
+    const filtered = (msgs || []).filter((m: any) => (m.capturedAt || 0) >= cutoff);
+    if (filtered.length) recent_ai_chats[host] = filtered;
+  }
+
+  return {
+    ...ctx,
+    recent_searches,
+    recent_ai_chats,
+  };
+}
+
+async function ensureWeeklyContextClear(): Promise<void> {
+  try {
+    if (!chrome?.storage?.local) return;
+
+    const lastClearedAt = await new Promise<number>((resolve) => {
+      chrome.storage.local.get([CONTEXT_MAINTENANCE_KEY], (res) => {
+        const v = res?.[CONTEXT_MAINTENANCE_KEY]?.lastClearedAt;
+        resolve(typeof v === "number" ? v : 0);
+      });
+    });
+
+    const now = Date.now();
+    if (!lastClearedAt || now - lastClearedAt >= ONE_WEEK_MS) {
+      await clearCueContext();
+      await new Promise<void>((resolve) => {
+        chrome.storage.local.set({
+          [CONTEXT_MAINTENANCE_KEY]: { lastClearedAt: now },
+        }, () => resolve());
+      });
+    }
+  } catch {
+    // ignore
+  }
+}
+
+// Run maintenance on background startup.
+ensureWeeklyContextClear().catch(() => {
+  // ignore
+});
 
 function inferSearchEngine(hostname: string): string {
   const h = hostname.toLowerCase();
@@ -445,6 +502,7 @@ type CueMessage =
   | { type: "CONTEXT_CLEAR" }
   | { type: "CONTEXT_SAVE_CHAT_MESSAGES"; payload: { hostname: string; url?: string; messages: Array<{ role?: string; text: string }> } }
   | { type: "CONTEXT_SUGGEST"; payload?: { goal?: string } }
+  | { type: "CONTEXT_AUTO_SUGGEST"; payload?: { goal?: string; count?: number } }
   | { type: string; [k: string]: any };
 
 chrome.runtime.onMessage.addListener((message: CueMessage, _sender, sendResponse) => {
@@ -507,10 +565,11 @@ chrome.runtime.onMessage.addListener((message: CueMessage, _sender, sendResponse
     return true;
   }
 
-  // Suggest using explicit-send context
+  // Suggest using explicit-send context (manual)
   if (message.type === "CONTEXT_SUGGEST") {
     (async () => {
       try {
+        await ensureWeeklyContextClear();
         const ctx = await getCueContext();
         const context_blob = buildContextBlob(ctx);
 
@@ -520,6 +579,42 @@ chrome.runtime.onMessage.addListener((message: CueMessage, _sender, sendResponse
           "Using the user's recent search queries and recent AI chat messages, propose 3 suggestions.",
           "Each suggestion should be one short paragraph and include a specific next step.",
           "If the context is empty, respond with a single question asking what the user is working on.",
+          "",
+          `Goal: ${goal}`,
+        ].join("\n");
+
+        const response = await fetch(`${API_BASE}/ask_ai`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: prompt, context_blob }),
+        });
+
+        const data = await response.json();
+        sendResponse(data);
+      } catch (e: any) {
+        sendResponse({ success: false, error: e?.message || String(e) });
+      }
+    })();
+    return true;
+  }
+
+  // Suggest using today's context (auto popup)
+  if (message.type === "CONTEXT_AUTO_SUGGEST") {
+    (async () => {
+      try {
+        await ensureWeeklyContextClear();
+        const raw = await getCueContext();
+        const today = filterContextToToday(raw);
+        const context_blob = buildContextBlob(today, { maxSearches: 50, maxMessagesPerHost: 50 });
+
+        const count = Math.min(Math.max(message.payload?.count || 5, 1), 10);
+        const goal = message.payload?.goal || "Generate helpful suggestions the user can take next based on today's activity.";
+
+        const prompt = [
+          "You are a proactive assistant inside a browser extension.",
+          `Using the user's activity from today only (searches + AI chats), propose ${count} suggestions.`,
+          "Return a numbered list 1..N. Keep each suggestion short and concrete, with a next step.",
+          "If the context is empty, return a single question asking what the user is working on.",
           "",
           `Goal: ${goal}`,
         ].join("\n");
@@ -564,12 +659,14 @@ chrome.runtime.onMessage.addListener((message: CueMessage, _sender, sendResponse
           context_blob = buildContextBlob(ctx);
         }
 
+        const conversationHistory = message.conversationHistory;
         const body = {
           query: message.query,
           page_title: tab?.title || "",
           current_url: tab?.url || "",
           selected_text: message.selectedText || "",
           ...(context_blob ? { context_blob } : {}),
+          ...(conversationHistory?.length ? { conversation_history: conversationHistory } : {}),
         };
 
         const response = await fetch(`${API_BASE}/ask_ai`, {
