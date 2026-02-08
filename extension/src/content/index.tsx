@@ -3,6 +3,9 @@ import { createRoot } from "react-dom/client";
 import { HaloStrip } from "./halo";
 import { LiveCompanion } from "./live_companion";
 import { initChatCapture } from "./chat_capture";
+import { initAutoSuggestions } from "./auto_suggestions";
+import { initVoiceChatPopup } from "./voice_chat_popup";
+import { startVoiceActivation } from "./voice_activation";
 // Import CSS as a string for Shadow DOM injection
 import haloStyles from "./halo.css?inline";
 
@@ -63,6 +66,20 @@ function initializeUI() {
     );
 
     initChatCapture();
+    initAutoSuggestions(haloStyles);
+    initVoiceChatPopup(haloStyles);
+
+    // Start voice activation if enabled in settings
+    try {
+      if (chrome?.storage?.local) {
+        chrome.storage.local.get(["cue_voice_activation_enabled_v1"], (res) => {
+          if (res?.cue_voice_activation_enabled_v1) {
+            startVoiceActivation().catch(() => { /* ignore */ });
+          }
+        });
+      }
+    } catch { /* ignore */ }
+
     console.log("[cue] UI initialized - notifications in halo strip");
   } catch (error) {
     console.error("[cue] Failed to initialize UI:", error);

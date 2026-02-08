@@ -256,9 +256,25 @@ const MAX_SESSION_TASKS = 50;
 let activeTaskCount = 0;
 const MAX_ACTIVE_TASKS = 5;
 
-// Global cooldown: prevent ANY suggest_tasks call within 30s of the last one
+// Global cooldown: prevent ANY suggest_tasks call within configurable time of the last one
 let lastGlobalSuggestTime = 0;
-const GLOBAL_SUGGEST_COOLDOWN_MS = 30_000;
+let GLOBAL_SUGGEST_COOLDOWN_MS = 30_000;
+
+// Load user-configured suggestion frequency from storage
+try {
+  chrome.storage.local.get(["cue_suggest_frequency"], (result) => {
+    if (result.cue_suggest_frequency) {
+      GLOBAL_SUGGEST_COOLDOWN_MS = Number(result.cue_suggest_frequency) * 1000;
+      console.log(`[cue] Suggest cooldown set to ${GLOBAL_SUGGEST_COOLDOWN_MS}ms from settings`);
+    }
+  });
+  chrome.storage.onChanged.addListener((changes) => {
+    if (changes.cue_suggest_frequency?.newValue) {
+      GLOBAL_SUGGEST_COOLDOWN_MS = Number(changes.cue_suggest_frequency.newValue) * 1000;
+      console.log(`[cue] Suggest cooldown updated to ${GLOBAL_SUGGEST_COOLDOWN_MS}ms`);
+    }
+  });
+} catch { /* ignore if storage unavailable */ }
 
 // Per-tab timers for page dwell time
 const pageDwellTimers: Record<number, ReturnType<typeof setTimeout>> = {};
@@ -1145,6 +1161,42 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  // Auto-suggest: generate suggestions based on today's context (for auto_suggestions.tsx)
+  if (message.type === "CONTEXT_AUTO_SUGGEST") {
+    (async () => {
+      try {
+        const ctx = await getCueContext();
+        // Filter to today's entries only
+        const todayStart = new Date();
+        todayStart.setHours(0, 0, 0, 0);
+        const todayMs = todayStart.getTime();
+        const todaySearches = (ctx.recent_searches || []).filter((s) => s.visitedAt >= todayMs);
+        const todayChats: Record<string, any[]> = {};
+        for (const [host, msgs] of Object.entries(ctx.recent_ai_chats || {})) {
+          const filtered = (msgs || []).filter((m: any) => m.capturedAt >= todayMs);
+          if (filtered.length) todayChats[host] = filtered;
+        }
+        const todayCtx = { ...ctx, recent_searches: todaySearches, recent_ai_chats: todayChats };
+        const blob = buildContextBlob(todayCtx, { maxSearches: 50, maxMessagesPerHost: 50 });
+
+        const count = message.payload?.count || 5;
+        const goal = message.payload?.goal || "";
+        const prompt = `Based on the user's browsing and AI chat activity today, propose ${count} helpful, concrete next-step suggestions the user can take. ${goal ? `Focus on: ${goal}` : ""}\n\nContext:\n${blob}`;
+
+        const response = await fetch(`${API_BASE}/ask_ai`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: prompt }),
+        });
+        const data = await response.json();
+        sendResponse({ success: data.success !== false, answer: data.answer || data.error || "No suggestions" });
+      } catch (e: any) {
+        sendResponse({ success: false, error: e?.message || "Auto-suggest failed" });
+      }
+    })();
+    return true;
+  }
+
   // Execute a suggested task (from auto-suggest popup)
   if (message.type === "EXECUTE_SUGGESTED_TASK") {
     (async () => {
@@ -1416,7 +1468,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             const ctx = await getCueContext();
             contextBlob = buildContextBlob(ctx);
           }
-          const context = {
+          const context: Record<string, unknown> = {
             query,
             page_title: tab?.title ?? "",
             current_url: tab?.url ?? "",
@@ -1425,6 +1477,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             user_email: message.userEmail ?? "",
             context_blob: contextBlob || undefined,
           };
+          // Support multi-turn conversation history from voice chat popup
+          if (Array.isArray(message.conversationHistory) && message.conversationHistory.length > 0) {
+            context.conversation_history = message.conversationHistory;
+          }
 
           const response = await fetch(`${API_BASE}/ask_ai`, {
             method: "POST",
@@ -1607,11 +1663,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       activeTaskCount = Math.max(0, activeTaskCount - count);
       console.log(`[cue] Task dismissed (${count}). Active count: ${activeTaskCount}/${MAX_ACTIVE_TASKS}`);
     }
-    // Reset suggestion state so next batch can be generated immediately
-    suggestionState = "active";
-    lastAutoSuggestTime = 0;
+    // Allow new suggestions on next natural trigger (dwell/topic change)
+    // but do NOT bypass cooldowns or trigger immediately to avoid excessive API calls
     if (activeTaskCount === 0) {
-      triggerAutoSuggest("task_action").catch(() => {});
+      suggestionState = "active";
     }
     sendResponse({ success: true, activeTaskCount });
     return true;

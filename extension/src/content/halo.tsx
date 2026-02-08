@@ -63,6 +63,16 @@ export function HaloStrip(): React.JSX.Element {
   const [suggestionText, setSuggestionText] = useState<string | null>(null);
   const [isSuggesting, setIsSuggesting] = useState(false);
 
+  // Voice activation state
+  const [voiceActivationEnabled, setVoiceActivationEnabled] = useState(false);
+  const [isVoiceListening, setIsVoiceListening] = useState(false);
+  const [wakePhrase, setWakePhrase] = useState("hey cue help me");
+  const [wakePhraseInput, setWakePhraseInput] = useState("hey cue help me");
+
+  // Auto-suggest state
+  const [autoSuggestDelayMs, setAutoSuggestDelayMs] = useState(60000);
+  const [savedSuggestions, setSavedSuggestions] = useState<string[]>([]);
+
   // Predicted tasks popup state
   type SuggestedTask = {
     id?: string;
@@ -231,6 +241,59 @@ export function HaloStrip(): React.JSX.Element {
     } catch (error: any) {
       console.error("[cue] Extension context invalidated:", error.message);
     }
+  }, []);
+
+  // Load voice activation + auto-suggest settings
+  useEffect(() => {
+    try {
+      if (!chrome?.storage?.local) return;
+      chrome.storage.local.get([
+        "cue_voice_activation_enabled_v1",
+        "cue_wake_phrase_v1",
+        "cue_auto_suggest_delay_ms_v1",
+        "cue_last_suggestions_v1",
+      ], (result) => {
+        if (chrome.runtime.lastError) return;
+        if (result.cue_voice_activation_enabled_v1 !== undefined) setVoiceActivationEnabled(!!result.cue_voice_activation_enabled_v1);
+        if (result.cue_wake_phrase_v1) { setWakePhrase(result.cue_wake_phrase_v1); setWakePhraseInput(result.cue_wake_phrase_v1); }
+        if (result.cue_auto_suggest_delay_ms_v1) setAutoSuggestDelayMs(Number(result.cue_auto_suggest_delay_ms_v1) || 60000);
+        if (result.cue_last_suggestions_v1?.items) setSavedSuggestions(result.cue_last_suggestions_v1.items);
+      });
+    } catch { /* ignore */ }
+  }, []);
+
+  // Listen for voice activation events
+  useEffect(() => {
+    const onListeningStarted = () => setIsVoiceListening(true);
+    const onListeningStopped = () => setIsVoiceListening(false);
+    const onOpenChat = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.prompt) {
+        setChatOpen(true);
+        setQuery(detail.prompt);
+        // Auto-send the prompt
+        try {
+          if (!chrome?.runtime?.id) return;
+          chrome.runtime.sendMessage({
+            type: "ASK_AI",
+            query: detail.prompt,
+            pageTitle: document.title,
+            pageUrl: window.location.href,
+          });
+          setIsThinking(true);
+        } catch { /* ignore */ }
+      }
+    };
+
+    window.addEventListener("cue:voice-listening-started", onListeningStarted);
+    window.addEventListener("cue:voice-listening-stopped", onListeningStopped);
+    window.addEventListener("cue:open-chat", onOpenChat);
+
+    return () => {
+      window.removeEventListener("cue:voice-listening-started", onListeningStarted);
+      window.removeEventListener("cue:voice-listening-stopped", onListeningStopped);
+      window.removeEventListener("cue:open-chat", onOpenChat);
+    };
   }, []);
 
   // Timer effect for recording
@@ -731,26 +794,29 @@ export function HaloStrip(): React.JSX.Element {
   };
 
   const handleDismissAllTasks = () => {
+    const tasksToDissmiss = [...predictedTasks];
+    // Clear UI immediately (optimistic)
+    setPredictedTasks([]);
+
     // Notify background that all tasks were dismissed
     try {
-      chrome.runtime.sendMessage({ type: "TASK_ACTION", action: "dismissed", count: predictedTasks.length });
+      chrome.runtime.sendMessage({ type: "TASK_ACTION", action: "dismissed", count: tasksToDissmiss.length });
     } catch { /* Extension context invalidated */ }
 
-    // Dismiss all tasks
-    predictedTasks.forEach((task) => {
+    // Stagger PATCH requests to avoid burst of requests
+    tasksToDissmiss.forEach((task, i) => {
       if (task.id) {
-        try {
-          fetch(`${import.meta.env.VITE_API_BASE_URL || "http://localhost:8000"}/suggested_tasks/${task.id}`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ status: "dismissed" }),
-          }).catch(() => {});
-        } catch {
-          // Ignore
-        }
+        setTimeout(() => {
+          try {
+            fetch(`${import.meta.env.VITE_API_BASE_URL || "http://localhost:8000"}/suggested_tasks/${task.id}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ status: "dismissed" }),
+            }).catch(() => {});
+          } catch { /* ignore */ }
+        }, i * 200);
       }
     });
-    setPredictedTasks([]);
   };
 
   // Edit task handlers
@@ -1412,6 +1478,83 @@ export function HaloStrip(): React.JSX.Element {
               <div className="halo-context-suggestion-text">{suggestionText}</div>
             </div>
           )}
+
+          {/* Saved Suggestions */}
+          {savedSuggestions.length > 0 && (
+            <div className="halo-context-section">
+              <div className="halo-context-section-title">Your Suggestions</div>
+              <div className="context-suggestions-grid">
+                {savedSuggestions.slice(0, 5).map((s, i) => (
+                  <button
+                    key={i}
+                    className="context-suggestion-card"
+                    onClick={() => {
+                      window.dispatchEvent(new CustomEvent("cue:open-chat", { detail: { prompt: s } }));
+                    }}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Settings */}
+          <div className="halo-context-settings">
+            <div className="halo-context-section-title">Settings</div>
+            <div className="halo-settings-row">
+              <label className="halo-settings-label">Auto suggestions after</label>
+              <select
+                className="halo-settings-select context-select"
+                value={autoSuggestDelayMs}
+                onChange={(e) => {
+                  const val = Number(e.target.value);
+                  setAutoSuggestDelayMs(val);
+                  try { chrome?.storage?.local?.set({ cue_auto_suggest_delay_ms_v1: val }); } catch { /* ignore */ }
+                }}
+              >
+                <option value={30000}>30 seconds</option>
+                <option value={60000}>1 minute</option>
+                <option value={120000}>2 minutes</option>
+              </select>
+            </div>
+            <div className="halo-settings-row">
+              <label className="halo-settings-label">Wake phrase</label>
+              <input
+                className="halo-settings-input wake-phrase-input"
+                type="text"
+                value={wakePhraseInput}
+                onChange={(e) => setWakePhraseInput(e.target.value)}
+                onBlur={() => {
+                  const phrase = wakePhraseInput.trim() || "hey cue help me";
+                  setWakePhrase(phrase);
+                  setWakePhraseInput(phrase);
+                  try { chrome?.storage?.local?.set({ cue_wake_phrase_v1: phrase }); } catch { /* ignore */ }
+                }}
+                onKeyDown={(e) => {
+                  e.stopPropagation();
+                  if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                }}
+                placeholder="hey cue help me"
+              />
+            </div>
+            <div className="halo-settings-row">
+              <label className="halo-settings-label">Voice activation</label>
+              <div className="voice-activation-toggle" onClick={() => {
+                const next = !voiceActivationEnabled;
+                setVoiceActivationEnabled(next);
+                try { chrome?.storage?.local?.set({ cue_voice_activation_enabled_v1: next }); } catch { /* ignore */ }
+                // Dispatch event for voice_activation.ts
+                window.dispatchEvent(new CustomEvent(next ? "cue:start-voice-activation" : "cue:stop-voice-activation"));
+              }}>
+                <span className={`voice-status-dot ${isVoiceListening ? "active" : ""}`}></span>
+                <span>{isVoiceListening ? "Listening for wake phrase..." : voiceActivationEnabled ? "Click to resume" : "Off"}</span>
+              </div>
+              {voiceActivationEnabled && wakePhrase && (
+                <span className="halo-settings-hint">Say "{wakePhrase}" to open voice chat</span>
+              )}
+            </div>
+          </div>
         </div>
       )}
 
