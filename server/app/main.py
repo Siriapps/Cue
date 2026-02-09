@@ -585,11 +585,8 @@ Return ONLY the JSON array, no markdown or explanation."""
                 # Fallback: create single informational task
                 tasks = [{"title": "Suggestion", "description": raw_text[:500], "service": None, "action": None, "params": None}]
 
-        # Cap new tasks: at most 5 active (pending + in_progress) total; only add slots available
-        all_active = list_suggested_tasks(limit=50, status="pending") + list_suggested_tasks(limit=50, status="in_progress")
-        active_count = len(all_active)
-        slots = max(0, 5 - active_count)
-        tasks = tasks[:slots] if slots else []
+        # Limit to 5 tasks per batch
+        tasks = tasks[:5]
 
         # Validate and save tasks to MongoDB
         saved_tasks = []

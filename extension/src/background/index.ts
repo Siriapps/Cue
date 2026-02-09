@@ -1100,24 +1100,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === "CONTEXT_SUGGEST") {
     (async () => {
       try {
-        // Apply same guards as triggerAutoSuggest to prevent duplicate/excessive calls
-        const now = Date.now();
-        if (now - lastGlobalSuggestTime < GLOBAL_SUGGEST_COOLDOWN_MS) {
-          console.log(`[cue] CONTEXT_SUGGEST: skipped (global cooldown, ${Math.round((GLOBAL_SUGGEST_COOLDOWN_MS - (now - lastGlobalSuggestTime)) / 1000)}s left)`);
-          sendResponse({ success: false, error: "Recently suggested. Try again shortly." });
-          return;
-        }
-        if (activeTaskCount >= MAX_ACTIVE_TASKS) {
-          console.log("[cue] CONTEXT_SUGGEST: skipped (user has pending tasks)");
-          sendResponse({ success: false, error: "You have pending tasks to review first." });
-          return;
-        }
-        if (sessionTaskCount >= MAX_SESSION_TASKS) {
-          sendResponse({ success: false, error: "Session task limit reached." });
-          return;
-        }
-        // Mark global cooldown before the API call
-        lastGlobalSuggestTime = now;
+        // Update cooldown timestamp (but don't block — always generate)
+        lastGlobalSuggestTime = Date.now();
 
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         const ctx = await getCueContext();

@@ -152,12 +152,21 @@ function sendSuggestionsToNotifications(items: string[], sourceQuery?: string): 
   }
 }
 
+type SuggestedTask = {
+  title: string;
+  description: string;
+  service?: string;
+  action?: string;
+  params?: Record<string, any>;
+};
+
 export function AutoSuggestions(): React.JSX.Element {
   const [delayMs, setDelayMs] = useState(60_000);
   const [open, setOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [raw, setRaw] = useState<string | null>(null);
-  const [items, setItems] = useState<string[]>([]);
+  const [items, setItems] = useState<SuggestedTask[]>([]);
+  const [executingIndex, setExecutingIndex] = useState<number | null>(null);
 
   const hasTriggeredRef = useRef(false);
   const timerRef = useRef<number | null>(null);
@@ -201,12 +210,10 @@ export function AutoSuggestions(): React.JSX.Element {
     }
   }, []);
 
+  // Trigger on ANY page after dwell time
   useEffect(() => {
-    // Only trigger on search pages.
-    if (!currentSearchQuery) return;
     if (hasTriggeredRef.current) return;
 
-    // Reset timer when delay changes.
     if (timerRef.current) {
       clearTimeout(timerRef.current);
     }
@@ -220,44 +227,26 @@ export function AutoSuggestions(): React.JSX.Element {
       setItems([]);
       setOpen(true);
 
+      // Send to background which gathers full context (searches, sites, AI chats, trajectory)
+      // and calls /suggest_tasks with everything
       try {
-        if (!chrome?.runtime?.id) {
-          throw new Error("Extension context invalidated");
-        }
-
         chrome.runtime.sendMessage(
-          {
-            type: "CONTEXT_AUTO_SUGGEST",
-            payload: {
-              count: 5,
-              goal: `The user searched for: ${currentSearchQuery}. Suggest what to do next.`,
-            },
-          },
+          { type: "CONTEXT_SUGGEST" },
           (response) => {
             setIsLoading(false);
-            if (chrome.runtime.lastError) {
-              setRaw("Extension context invalidated. Please reload the page.");
-              return;
-            }
-            if (response?.success && response?.answer) {
-              const parsed = parseNumberedSuggestions(response.answer);
-              setRaw(response.answer);
-              setItems(parsed);
+            if (response?.success && response?.tasks?.length > 0) {
+              setItems(response.tasks as SuggestedTask[]);
+              setRaw(null);
               saveSuggestions({
                 generatedAt: Date.now(),
-                sourceQuery: currentSearchQuery,
-                items: parsed,
-                raw: response.answer,
+                sourceQuery: document.title || window.location.hostname,
+                items: response.tasks.map((t: any) => t.title),
+                raw: JSON.stringify(response.tasks),
               });
             } else {
-              const err = response?.error || "Failed to generate suggestions";
+              const err = response?.error || "No tasks generated. Try more context.";
               setRaw(err);
-              saveSuggestions({
-                generatedAt: Date.now(),
-                sourceQuery: currentSearchQuery,
-                items: [],
-                raw: err,
-              });
+              setItems([]);
             }
           }
         );
@@ -270,7 +259,7 @@ export function AutoSuggestions(): React.JSX.Element {
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [currentSearchQuery, delayMs]);
+  }, [delayMs]);
 
   if (!open) return <></>;
 
@@ -314,27 +303,46 @@ export function AutoSuggestions(): React.JSX.Element {
 
         {!isLoading && items.length > 0 && (
           <div className="cue-suggest-grid">
-            {items.slice(0, 5).map((s, i) => (
-              <button
+            {items.slice(0, 5).map((task, i) => (
+              <div
                 key={i}
                 className="cue-suggest-card"
-                onClick={() => {
-                  dispatchOpenChat(s);
-                  setOpen(false);
-                }}
-                title="Click to start chat"
+                title={task.description || task.title}
               >
                 <div className="cue-suggest-card-number">{i + 1}</div>
                 <div className="cue-suggest-card-content">
-                  <div className="cue-suggest-card-text">{s}</div>
-                  <div className="cue-suggest-card-action">
-                    <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14">
-                      <path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/>
-                    </svg>
-                    <span>Start chat</span>
+                  {/* Remove markdown formatting from title */}
+                  <div className="cue-suggest-card-text">
+                    {task.title.replace(/\*\*/g, '').replace(/\*/g, '')}
                   </div>
+                  {/* Show service label */}
+                  {task.service && (
+                    <div className="cue-suggest-card-service">{task.service}</div>
+                  )}
                 </div>
-              </button>
+                {/* Accept button that executes task */}
+                <button
+                  className="cue-suggest-card-accept"
+                  onClick={() => {
+                    setExecutingIndex(i);
+                    // Send task to background for execution
+                    chrome.runtime.sendMessage({
+                      type: "EXECUTE_SUGGESTED_TASK",
+                      service: task.service || "gemini_chat",
+                      action: task.action || "open",
+                      params: task.params || { prompt: task.description || task.title },
+                    }, (response) => {
+                      setExecutingIndex(null);
+                      if (response?.success) {
+                        setOpen(false);
+                      }
+                    });
+                  }}
+                  disabled={executingIndex === i}
+                >
+                  {executingIndex === i ? "..." : "Accept"}
+                </button>
+              </div>
             ))}
           </div>
         )}

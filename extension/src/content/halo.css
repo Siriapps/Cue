@@ -2287,13 +2287,14 @@
 
 .cue-suggest-card {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
+  justify-content: space-between;
   gap: 10px;
   padding: 10px 12px;
   background: transparent;
   border: none;
   border-radius: 10px;
-  cursor: pointer;
+  cursor: default;
   text-align: left;
   transition: background 0.2s;
   width: 100%;
@@ -2342,6 +2343,41 @@
 .cue-suggest-card-action svg {
   width: 12px;
   height: 12px;
+}
+
+.cue-suggest-card-service {
+  font-size: 10px;
+  color: #8b5cf6;
+  font-weight: 600;
+  margin-top: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.cue-suggest-card-accept {
+  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  background: linear-gradient(135deg, #8b5cf6, #6d28d9);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.cue-suggest-card-accept:hover:not(:disabled) {
+  background: linear-gradient(135deg, #9d6dfa, #7c3aed);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4);
+}
+
+.cue-suggest-card-accept:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
 }
 
 /* Fallback */
