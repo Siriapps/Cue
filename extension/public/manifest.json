@@ -28,6 +28,7 @@
     "https://gmail.com/*",
     "https://*.google.com/*"
   ],
+  "host_permissions": ["<all_urls>", "https://generativelanguage.googleapis.com/*", "http://localhost:8000/*", "http://localhost:3001/*", "https://accounts.google.com/*", "https://www.googleapis.com/*"],
   "oauth2": {
     "client_id": "844899909230-fvjge00410ai2k1aqvp5sj76k211jf8g.apps.googleusercontent.com",
     "scopes": [

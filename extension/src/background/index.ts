@@ -417,6 +417,18 @@ chrome.storage.local.get(["urlTrajectory"], (result) => {
   }
 });
 
+chrome.history.onVisited.addListener(async (item) => {
+  if (!item.url) return;
+  const query = extractSearchQueryFromUrl(item.url);
+  if (!query) return;
+  await addRecentSearch({
+    query,
+    url: item.url,
+    engine: inferSearchEngine(item.url),
+    visitedAt: item.lastVisitTime ?? Date.now(),
+  });
+});
+
 // Get domain category from URL
 function getDomainCategory(url: string): string {
   try {
