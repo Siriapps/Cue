@@ -141,6 +141,7 @@ export function LiveCompanion(): JSX.Element {
   const [currentPose, setCurrentPose] = useState<PoseData | null>(null);
   const [currentMotion, setCurrentMotion] = useState<MotionData | null>(null);
   const [context, setContext] = useState<string>("general");
+  const [transcript, setTranscript] = useState<string>("");
   const hideTimeout = useRef<number | null>(null);
 
   // Listen for messages from background script
@@ -154,6 +155,13 @@ export function LiveCompanion(): JSX.Element {
         setIsExpanded(false);
         setCurrentPose(null);
         setCurrentMotion(null);
+        setTranscript("");
+      } else if (message.type === "TRANSCRIPT_UPDATE") {
+        const t = (message.payload?.transcript || "").toString();
+        if (t) {
+          setTranscript(t);
+          setIsExpanded(true);
+        }
       } else if (message.type === "POSE_UPDATE") {
         const pose = message.payload as PoseData;
         setCurrentPose(pose);
@@ -229,8 +237,19 @@ export function LiveCompanion(): JSX.Element {
           </div>
 
           <div className="card-content">
-            <Avatar2D pose={currentPose} />
-            <MotionIndicator motion={currentMotion} />
+            {(currentPose || currentMotion) && (
+              <>
+                <Avatar2D pose={currentPose} />
+                <MotionIndicator motion={currentMotion} />
+              </>
+            )}
+
+            {transcript && (
+              <div className="transcript-box">
+                <div className="transcript-label">Transcript</div>
+                <div className="transcript-text">{transcript}</div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -384,6 +403,32 @@ export function LiveCompanion(): JSX.Element {
           flex-direction: column;
           align-items: center;
           gap: 12px;
+        }
+
+        .transcript-box {
+          width: 100%;
+          padding: 10px 12px;
+          background: rgba(255, 255, 255, 0.06);
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          border-radius: 12px;
+          text-align: left;
+        }
+
+        .transcript-label {
+          color: #94a3b8;
+          font-size: 11px;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+          margin-bottom: 6px;
+        }
+
+        .transcript-text {
+          color: #e2e8f0;
+          font-size: 13px;
+          line-height: 1.4;
+          max-height: 120px;
+          overflow: auto;
+          white-space: pre-wrap;
         }
 
         /* 2D Avatar Styles */

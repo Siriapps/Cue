@@ -884,6 +884,8 @@ function connectPuppeteerSocket(): Promise<WebSocket> {
             chrome.tabs.sendMessage(tab.id, { type: "DIAGRAM_RECEIVED", payload: data });
           } else if (data.type === "motion") {
             chrome.tabs.sendMessage(tab.id, { type: "MOTION_DETECTED", payload: data });
+          } else if (data.type === "transcript") {
+            chrome.tabs.sendMessage(tab.id, { type: "TRANSCRIPT_UPDATE", payload: data });
           }
         }
       } catch (e) {
@@ -927,11 +929,13 @@ async function sendChunkToBackendHttp(audio_base64: string, mimeType: string) {
   });
   const data = await response.json();
 
-  if (data?.type === "diagram" || data?.type === "pose" || data?.type === "motion") {
+  if (data?.type === "diagram" || data?.type === "pose" || data?.type === "motion" || data?.type === "transcript") {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tab?.id) {
       const messageType = data.type === "diagram" ? "DIAGRAM_RECEIVED" :
-                          data.type === "pose" ? "POSE_UPDATE" : "MOTION_DETECTED";
+                          data.type === "pose" ? "POSE_UPDATE" :
+                          data.type === "motion" ? "MOTION_DETECTED" :
+                          "TRANSCRIPT_UPDATE";
       chrome.tabs.sendMessage(tab.id, { type: messageType, payload: data });
     }
   }

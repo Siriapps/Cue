@@ -315,15 +315,31 @@ async def summarize_context_endpoint(
 async def process_audio_chunk_endpoint(
     payload: ProcessAudioChunkRequest,
 ) -> Dict[str, Any]:
-    result = process_audio_chunk(
-        audio_base64=payload.audio_base64,
-        mime_type=payload.mime_type,
-        chunk_start_seconds=payload.chunk_start_seconds,
-        source_url=payload.source_url,
-    )
-    if result:
-        save_diagram_event(payload.model_dump(), result)
-    return result or {"type": "none"}
+    """Transcribe a short Go Live audio chunk.
+
+    NOTE: This endpoint is used by the extension Go Live feature as an HTTP fallback.
+    We prioritize *literal transcription* over speculative interpretations to avoid hallucinations.
+    """
+    try:
+        transcript = transcribe_audio(
+            audio_base64=payload.audio_base64,
+            mime_type=payload.mime_type,
+        )
+    except Exception as e:
+        print(f"[cue] process_audio_chunk transcription error: {e}")
+        transcript = ""
+
+    transcript = (transcript or "").strip()
+    if not transcript:
+        return {"type": "none"}
+
+    # Keep response payload small
+    return {
+        "type": "transcript",
+        "transcript": transcript[:4000],
+        "chunk_start_seconds": payload.chunk_start_seconds,
+        "source_url": payload.source_url,
+    }
 
 
 @app.get("/summaries")
@@ -504,38 +520,44 @@ async def suggest_tasks_endpoint(payload: SuggestTasksRequest) -> Dict[str, Any]
         return {"success": False, "error": "No context available to generate suggestions", "tasks": []}
 
     # Build the prompt for Gemini
+    # NOTE: Keep this prompt *context-grounded*. Overly prescriptive requirements (e.g. "always include 2 Google tasks")
+    # tend to cause generic/filler suggestions when the context doesn't support it.
     prompt = f"""You have the following context about the user's recent activity:
 
 {full_context}
 
-Generate 3-5 tasks that would be useful for the user. You MUST include:
+Based on this context, generate 1-5 concrete, actionable tasks that would be useful for the user.
 
-1. **At least 2 tasks** that use the user's connected Google services (gmail, calendar, tasks, docs, drive, sheets). These should be concrete and actionable (e.g. draft an email, add a calendar event, create a doc, add a task). Use the context to make them relevant (names, subjects, dates).
+Hard rules:
+- Be specific and use details found in the context (names, subjects, doc titles, project names, URLs, deadlines).
+- Do NOT invent recipients, dates, meeting times, or document titles. If key details are missing, prefer a gemini_chat task that asks a clarifying question.
+- Avoid generic tasks like "Take a break" or "Schedule a meeting" unless the context strongly suggests it.
 
-2. **Optionally 1-2 "chat continuation" tasks** where the user might want to continue a thought or ask a follow-up — use service "gemini_chat" with action "open" and params with "prompt" (the full question to ask Gemini) and "context" (brief context). These appear as clickable suggestions; when accepted, they open Gemini with the prompt ready.
+When to use services:
+- Only produce an executable Google-service task (gmail/calendar/tasks/docs/sheets) if you can populate the important params from context.
+- If you cannot safely populate params, use service "gemini_chat" with action "open" and params {{"prompt": ..., "context": ...}} to continue/clarify.
 
-3. **At most 1 wellness/break suggestion** (e.g. "Take a 5-minute break", "Stretch and rest your eyes"). Use service null, action null, params null.
-
-Services and actions (use for Google and AI tasks):
+Services and actions:
 - gmail: draft (to, subject, body), send (to, subject, body)
 - calendar: create (title/summary, description, date, time)
 - tasks: add (title, notes, due)
 - docs: create (title, content)
 - sheets: create (title)
-- gemini_chat: open (prompt - full question/prompt for Gemini, context - optional brief context). Use for "continue this conversation", "ask Gemini about X", follow-up questions.
-- antigravity: search (prompt - research prompt)
-- openai_studio: open (prompt - for ChatGPT)
+- gemini_chat: open (prompt - the full question/prompt to ask Gemini, context - any helpful context)
+- antigravity: search (prompt - the search/research prompt with full context)
+- openai_studio: open (prompt - the full question/prompt to ask ChatGPT)
 
-Be specific. All tasks are saved and shown in the user's notifications and AI activity page; chat-style ones (gemini_chat) open Gemini with the prompt when accepted.
-
-Return ONLY a JSON array of objects with: title (string), description (string), service (string or null), action (string or null), params (object or null).
+Return ONLY a JSON array of objects with these fields:
+- title: short task label (string)
+- description: one or two sentences (string)
+- service: one of gmail, calendar, tasks, docs, sheets, gemini_chat, antigravity, openai_studio, or null if informational only
+- action: the action name or null
+- params: object with fields needed for the action, or null
 
 Example:
 [
-  {{"title": "Draft hackathon submission email", "description": "Prepare email to submit your hackathon project", "service": "gmail", "action": "draft", "params": {{"to": "hackathon@example.com", "subject": "Hackathon Submission", "body": "Hi,\\n\\nPlease find attached our hackathon submission..."}}}},
-  {{"title": "Add team sync to calendar", "description": "Schedule a 30-min team sync this week", "service": "calendar", "action": "create", "params": {{"title": "Team sync", "description": "Weekly sync", "date": "", "time": ""}}}},
-  {{"title": "Ask Gemini to summarize next steps", "description": "Get a short summary of next steps from your recent context", "service": "gemini_chat", "action": "open", "params": {{"prompt": "Based on what I've been working on, give me 3 concrete next steps.", "context": "User's recent browsing and tasks"}}}},
-  {{"title": "Take a short break", "description": "Stand up, stretch, and rest your eyes for 5 minutes.", "service": null, "action": null, "params": null}}
+  {{"title": "Draft hackathon submission email", "description": "Prepare an email to submit your hackathon project", "service": "gmail", "action": "draft", "params": {{"to": "hackathon@example.com", "subject": "Hackathon Submission", "body": "Hi,\\n\\nPlease find attached our hackathon submission..."}}}},
+  {{"title": "Ask Gemini to clarify next steps", "description": "Ask a focused follow-up question based on what you've been browsing/working on", "service": "gemini_chat", "action": "open", "params": {{"prompt": "Based on what I've been working on, what are 3 concrete next steps? If you need details, ask me 1-2 clarifying questions first.", "context": "Recent browsing + sessions + activity"}}}}
 ]
 
 Return ONLY the JSON array, no markdown or explanation."""
@@ -1711,54 +1733,39 @@ async def websocket_puppeteer(websocket: WebSocket) -> None:
             if msg_type == "audio_chunk":
                 audio_base64 = message.get("audio_base64")
                 mime_type = message.get("mime_type")
-                
+
                 if not audio_base64 or not mime_type:
                     await websocket.send_json({"error": "Missing audio_base64 or mime_type"})
                     continue
-                
+
                 chunk_start = chunk_count * 5
                 chunk_count += 1
-                
-                motion_result = extract_motions(
-                    audio_base64=audio_base64,
-                    mime_type=mime_type,
-                    chunk_start_seconds=chunk_start,
-                )
-                
-                if motion_result.get("has_instructions") and motion_result.get("motions"):
-                    motions = motion_result["motions"]
-                    hints = [parse_motion_to_animation_hint(m) for m in motions]
-                    
-                    if hints:
-                        pose = generate_pose_for_motion(hints[0])
-                        await websocket.send_json({
-                            "type": "pose",
-                            **pose,
-                            "context": motion_result.get("context", "general"),
-                        })
-                    
-                    await websocket.send_json({
-                        "type": "motion",
-                        "motions": motions,
-                        "context": motion_result.get("context", "general"),
-                        "chunk_index": chunk_count - 1,
-                    })
-                else:
-                    diagram_result = process_audio_chunk(
+
+                # Go Live goal: literal transcription (avoid speculative motion/diagram interpretation).
+                transcript = ""
+                try:
+                    transcript = transcribe_audio(
                         audio_base64=audio_base64,
                         mime_type=mime_type,
-                        chunk_start_seconds=chunk_start,
                     )
-                    
-                    if diagram_result and diagram_result.get("type") == "diagram":
-                        save_diagram_event(message, diagram_result)
-                        await websocket.send_json(diagram_result)
-                    else:
-                        await websocket.send_json({
-                            "type": "ack",
-                            "chunk_index": chunk_count - 1,
-                            "has_motion": False,
-                        })
+                except Exception as e:
+                    await websocket.send_json({"error": f"Transcription failed: {str(e)}"})
+                    continue
+
+                transcript = (transcript or "").strip()
+                if transcript:
+                    await websocket.send_json({
+                        "type": "transcript",
+                        "transcript": transcript[:4000],
+                        "chunk_index": chunk_count - 1,
+                        "chunk_start_seconds": chunk_start,
+                    })
+                else:
+                    await websocket.send_json({
+                        "type": "none",
+                        "chunk_index": chunk_count - 1,
+                        "chunk_start_seconds": chunk_start,
+                    })
             
             elif msg_type == "get_preset":
                 pose_name = message.get("pose_name", "t_pose")

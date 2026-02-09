@@ -54,6 +54,7 @@ def call_gemini(
     parts: List[Dict[str, Any]],
     system_prompt: Optional[str] = None,
     response_mime_type: str = "application/json",
+    generation_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     # #region agent log
     try:
@@ -78,9 +79,14 @@ def call_gemini(
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     )
+    gen_cfg: Dict[str, Any] = {"responseMimeType": response_mime_type}
+    if generation_config and isinstance(generation_config, dict):
+        # Allow callers (e.g. transcription) to force low-temp / deterministic settings.
+        gen_cfg.update(generation_config)
+
     payload: Dict[str, Any] = {
         "contents": [{"role": "user", "parts": parts}],
-        "generationConfig": {"responseMimeType": response_mime_type},
+        "generationConfig": gen_cfg,
     }
     if system_prompt:
         payload["systemInstruction"] = {

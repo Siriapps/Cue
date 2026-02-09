@@ -8,36 +8,42 @@ from app.agents.gemini_client import call_gemini
 
 
 TRANSCRIBE_PROMPT = """
-Transcribe the audio content accurately. Include all spoken words.
-If there is music or non-speech audio, note it briefly in brackets.
+You are a literal speech-to-text transcriber.
 
-Output the transcription as plain text only, no JSON formatting.
+Rules:
+- Transcribe ONLY what is actually spoken in the audio.
+- Do NOT add commentary, interpretations, scene descriptions, or summaries.
+- If audio is unclear, use [inaudible] rather than guessing.
+- If there is music or non-speech audio, note it briefly in brackets (e.g. [music], [applause]).
+- If you cannot hear any speech, output an empty string.
+
+Output plain text only (no JSON, no markdown).
 """
 
 
 SUMMARY_PROMPT = """
-You are an executive assistant analyzing a recorded session.
+You are summarizing a recorded session.
 
-Generate a structured summary of the session including:
-1. A brief TL;DR (1-2 sentences)
-2. Key points discussed (3-5 bullet points)
-3. Action items if any were mentioned
-4. The overall topic/theme
+IMPORTANT: You MUST be strictly grounded in the provided transcript.
+- Only include information that is explicitly stated in the transcript.
+- Do NOT guess, fill in missing details, invent names/companies, or add outside knowledge.
+- If something is unclear or not mentioned, omit it.
+- Action items must be things the speaker explicitly said they will do / need to do (otherwise action_items must be []).
+
+Generate a structured summary including:
+1) TL;DR (1-2 sentences) — only what the transcript clearly supports.
+2) Key points (3-5 bullets) — prefer short, concrete statements; avoid interpretation.
+3) Action items (0-5) — ONLY if explicitly mentioned.
+4) Topic/theme — if not obvious, use "Unknown".
+5) Sentiment — choose the closest label based on how the transcript reads; if unsure use "Informative".
 
 Return strict JSON in this exact format:
 {
-    "tldr": "One or two sentence summary...",
-    "key_points": [
-        "First key point...",
-        "Second key point...",
-        "Third key point..."
-    ],
-    "action_items": [
-        {"task": "Action to take", "priority": "High|Medium|Low"},
-        {"task": "Another action", "priority": "Medium"}
-    ],
-    "topic": "Main topic or theme",
-    "sentiment": "Informative|Educational|Casual|Professional|Entertainment"
+  "tldr": "...",
+  "key_points": ["..."],
+  "action_items": [{"task": "...", "priority": "High|Medium|Low"}],
+  "topic": "...",
+  "sentiment": "Informative|Educational|Casual|Professional|Entertainment"
 }
 
 If no action items were mentioned, return an empty array for action_items.
@@ -72,6 +78,12 @@ def transcribe_audio(
         parts=parts,
         system_prompt=TRANSCRIBE_PROMPT,
         response_mime_type="text/plain",
+        generation_config={
+            "temperature": 0,
+            "topP": 0,
+            # Keep chunks short; avoids runaway generations.
+            "maxOutputTokens": 1024,
+        },
     )
     
     # Handle different response formats
@@ -132,6 +144,11 @@ Analyze this transcript and generate a summary.
         parts=parts,
         system_prompt=SUMMARY_PROMPT,
         response_mime_type="application/json",
+        generation_config={
+            "temperature": 0,
+            "topP": 0,
+            "maxOutputTokens": 1024,
+        },
     )
     
     # Ensure we have the expected format
