@@ -136,6 +136,22 @@ function dispatchOpenChat(prompt: string): void {
   }
 }
 
+function sendSuggestionsToNotifications(items: string[], sourceQuery?: string): void {
+  try {
+    if (!chrome?.runtime?.id || items.length === 0) return;
+    // Send to background to save as suggested tasks → notification bell + activity page
+    chrome.runtime.sendMessage({
+      type: "SAVE_AUTO_SUGGESTIONS",
+      payload: {
+        items,
+        sourceQuery: sourceQuery || "",
+      },
+    });
+  } catch {
+    // ignore
+  }
+}
+
 export function AutoSuggestions(): React.JSX.Element {
   const [delayMs, setDelayMs] = useState(60_000);
   const [open, setOpen] = useState(false);
@@ -276,7 +292,13 @@ export function AutoSuggestions(): React.JSX.Element {
             </svg>
             <span>Suggestions for you</span>
           </div>
-          <button className="cue-suggest-close" onClick={() => setOpen(false)} title="Close">
+          <button className="cue-suggest-close" onClick={() => {
+            // Send items to notification bell before closing
+            if (items.length > 0) {
+              sendSuggestionsToNotifications(items, currentSearchQuery || undefined);
+            }
+            setOpen(false);
+          }} title="Close">
             ×
           </button>
         </div>

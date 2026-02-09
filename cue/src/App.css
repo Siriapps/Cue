@@ -5955,28 +5955,23 @@ body {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4) !important;
 }
 
-.github-icon-hub svg {
-  opacity: 0.8;
+.top-site-hub {
+  transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s;
 }
 
-.github-icon-hub:hover svg {
+.top-site-hub svg {
+  opacity: 0.85;
+  transition: opacity 0.2s;
+}
+
+.top-site-hub:hover svg {
   opacity: 1;
 }
 
-.join-btn-hub {
-  border-color: rgba(52, 168, 83, 0.3) !important;
-  background: rgba(52, 168, 83, 0.1) !important;
-}
-
-.join-btn-hub:hover {
-  border-color: rgba(52, 168, 83, 0.5) !important;
-  background: rgba(52, 168, 83, 0.15) !important;
-}
-
-.join-label {
-  font-size: 9px;
+.top-site-label {
+  font-size: 8px;
   font-weight: 600;
-  color: #34a853;
+  color: rgba(255, 255, 255, 0.7);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -6243,4 +6238,100 @@ body {
 .mosaic-expand-refresh:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* ==========================================
+   DAILY HABIT CARD
+   ========================================== */
+.daily-habit-card {
+  cursor: pointer;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+.daily-habit-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(139, 92, 246, 0.25);
+}
+.hub-badge.daily {
+  background: rgba(251, 191, 36, 0.2);
+  color: #d97706;
+}
+.daily-habit-prompt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 4px;
+}
+.daily-habit-icon {
+  font-size: 18px;
+}
+.daily-habit-text {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.9);
+}
+.daily-habit-streak {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+/* ==========================================
+   AI QUEUE HUB
+   ========================================== */
+.ai-queue-hub {
+  cursor: pointer;
+  border: 1px solid rgba(99, 102, 241, 0.25);
+}
+.hub-badge.ai-queue {
+  background: rgba(99, 102, 241, 0.2);
+  color: #818cf8;
+}
+.ai-queue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0;
+}
+.ai-queue-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ai-queue-service {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(99, 102, 241, 0.15);
+  color: #818cf8;
+  font-weight: 600;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.ai-queue-count {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.5);
+  margin-top: 4px;
+}
+
+/* ==========================================
+   GMAIL ACTION ITEMS
+   ========================================== */
+.gmail-action-item {
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 6px;
+  transition: background 0.2s;
+}
+.gmail-action-item:hover {
+  background: rgba(234, 67, 53, 0.1);
+}
+
+/* ==========================================
+   DYNAMIC FOCUS HUBS
+   ========================================== */
+.dynamic-focus-hub {
+  border: 1px solid rgba(139, 92, 246, 0.2);
+}
+.hub-badge.focus {
+  background: rgba(139, 92, 246, 0.15);
+  color: #a78bfa;
 }

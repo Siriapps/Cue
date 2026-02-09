@@ -245,7 +245,8 @@ let lockoutStartTime = 0;
 // Timing constants
 const AUTO_SUGGEST_COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown after user interaction
 const LOCKOUT_DURATION_MS = 5 * 60 * 1000; // 5 minutes lockout if same topic
-const PAGE_DWELL_TIME_MS = 10000; // 10 seconds on page can trigger
+const AUTO_SUGGEST_DELAY_STORAGE_KEY = "cue_auto_suggest_delay_ms_v1";
+const DEFAULT_PAGE_DWELL_MS = 60_000; // 1 minute default; user can set 30s, 1m, 2m in Context
 const MAX_SUGGESTIONS_PER_BATCH = 5; // Show max 5 tasks per suggestion
 
 // Session task limit - max 50 tasks per session, decrement when user accepts
@@ -437,61 +438,58 @@ function getDomainCategory(url: string): string {
 }
 
 // Check if we should trigger auto-suggest based on enhanced state machine
-function shouldTriggerSuggestion(url: string): boolean {
+// When triggerReason === "page_dwell", allow triggering after user's dwell time even if category unchanged
+function shouldTriggerSuggestion(url: string, triggerReason?: string): boolean {
   const category = getDomainCategory(url);
   const now = Date.now();
   const currentKeywords = extractTrajectoryKeywords();
+  const isDwellTrigger = triggerReason === "page_dwell";
 
   // State machine logic
   switch (suggestionState) {
     case "cooldown": {
-      // In cooldown - check if 2 minutes have passed
       if (now - lastAutoSuggestTime < AUTO_SUGGEST_COOLDOWN_MS) {
         const remaining = Math.round((AUTO_SUGGEST_COOLDOWN_MS - (now - lastAutoSuggestTime)) / 1000);
         console.log(`[cue] State: COOLDOWN - ${remaining}s remaining`);
         return false;
       }
-
-      // Cooldown expired - move to intent check
       suggestionState = "intent_check";
       console.log("[cue] State: COOLDOWN -> INTENT_CHECK");
-      // Fall through to intent_check
     }
-
+    // fall through
     case "intent_check": {
-      // Check if topic changed (pivot detection)
       if (!isTopicSimilar(currentKeywords, lastSuggestedTopicKeywords)) {
-        // Topic changed! Pivot detected - reset to active
         console.log(`[cue] PIVOT DETECTED - topic changed from [${lastSuggestedTopicKeywords.slice(0, 3).join(", ")}] to [${currentKeywords.slice(0, 3).join(", ")}]`);
         suggestionState = "active";
-        // Immediate trigger
         break;
       }
-
-      // Same topic - enter lockout
-      console.log(`[cue] Same topic detected - entering LOCKOUT`);
-      suggestionState = "lockout";
-      lockoutStartTime = now;
-      return false;
+      if (!isDwellTrigger) {
+        console.log(`[cue] Same topic detected - entering LOCKOUT`);
+        suggestionState = "lockout";
+        lockoutStartTime = now;
+        return false;
+      }
+      // Dwell trigger: allow even with same topic
+      suggestionState = "active";
+      break;
     }
 
     case "lockout": {
-      // In lockout - check if 5 minutes have passed
       if (now - lockoutStartTime < LOCKOUT_DURATION_MS) {
-        const remaining = Math.round((LOCKOUT_DURATION_MS - (now - lockoutStartTime)) / 1000);
-
-        // But still check for pivot detection
         if (!isTopicSimilar(currentKeywords, lastSuggestedTopicKeywords)) {
           console.log(`[cue] PIVOT in LOCKOUT - topic changed, resetting to ACTIVE`);
           suggestionState = "active";
           break;
         }
-
-        console.log(`[cue] State: LOCKOUT - ${remaining}s remaining (suppressing same-topic suggestions)`);
-        return false;
+        if (!isDwellTrigger) {
+          const remaining = Math.round((LOCKOUT_DURATION_MS - (now - lockoutStartTime)) / 1000);
+          console.log(`[cue] State: LOCKOUT - ${remaining}s remaining`);
+          return false;
+        }
+        // Dwell: allow one trigger
+        suggestionState = "active";
+        break;
       }
-
-      // Lockout expired - back to active
       console.log("[cue] State: LOCKOUT -> ACTIVE");
       suggestionState = "active";
       break;
@@ -499,17 +497,16 @@ function shouldTriggerSuggestion(url: string): boolean {
 
     case "active":
     default:
-      // Active state - check for category change
       break;
   }
 
-  // Now in ACTIVE state - check if context/category changed
-  if (category !== lastSuggestCategory) {
-    console.log(`[cue] Auto-suggest: context changed from "${lastSuggestCategory}" to "${category}"`);
+  // In ACTIVE: trigger on category change OR on explicit page_dwell
+  if (isDwellTrigger || category !== lastSuggestCategory) {
+    console.log(`[cue] Auto-suggest: ${isDwellTrigger ? "page_dwell" : "category change"} (${category})`);
     lastSuggestCategory = category;
     lastAutoSuggestTime = now;
     lastSuggestedTopicKeywords = currentKeywords.slice();
-    suggestionState = "cooldown"; // Enter cooldown after trigger
+    suggestionState = "cooldown";
     return true;
   }
 
@@ -525,10 +522,25 @@ function onUserViewedSuggestions() {
 }
 
 function checkContextAndTrigger(url: string, trigger: string) {
-  if (shouldTriggerSuggestion(url)) {
+  if (shouldTriggerSuggestion(url, trigger)) {
     console.log(`[cue] Triggering auto-suggest (${trigger})`);
     triggerAutoSuggest(trigger);
   }
+}
+
+function getPageDwellDelayMs(): Promise<number> {
+  return new Promise((resolve) => {
+    try {
+      if (!chrome?.storage?.local) return resolve(DEFAULT_PAGE_DWELL_MS);
+      chrome.storage.local.get([AUTO_SUGGEST_DELAY_STORAGE_KEY], (res) => {
+        const v = res?.[AUTO_SUGGEST_DELAY_STORAGE_KEY];
+        const ms = typeof v === "number" && v >= 5000 ? v : DEFAULT_PAGE_DWELL_MS;
+        resolve(Math.min(ms, 5 * 60 * 1000)); // cap at 5 min
+      });
+    } catch {
+      resolve(DEFAULT_PAGE_DWELL_MS);
+    }
+  });
 }
 
 function startPageDwellTimer(tabId: number, url: string) {
@@ -540,14 +552,15 @@ function startPageDwellTimer(tabId: number, url: string) {
   // Store URL to detect navigation
   tabUrls[tabId] = url;
 
-  // Start new timer
-  pageDwellTimers[tabId] = setTimeout(() => {
-    // Check if still on same URL
-    if (tabUrls[tabId] === url) {
-      checkContextAndTrigger(url, "page_dwell");
-    }
-    delete pageDwellTimers[tabId];
-  }, PAGE_DWELL_TIME_MS);
+  getPageDwellDelayMs().then((delayMs) => {
+    if (tabUrls[tabId] !== url) return; // navigated away already
+    pageDwellTimers[tabId] = setTimeout(() => {
+      if (tabUrls[tabId] === url) {
+        checkContextAndTrigger(url, "page_dwell");
+      }
+      delete pageDwellTimers[tabId];
+    }, delayMs);
+  });
 }
 
 // Listen for tab updates to track page dwell time, URL trajectory, AND check context changes
@@ -1197,6 +1210,58 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  // Save auto-suggest popup items as suggested tasks → notification bell + activity page
+  if (message.type === "SAVE_AUTO_SUGGESTIONS") {
+    (async () => {
+      try {
+        const items: string[] = message.payload?.items || [];
+        const sourceQuery: string = message.payload?.sourceQuery || "";
+        if (items.length === 0) {
+          sendResponse({ success: false });
+          return;
+        }
+
+        // Convert text suggestions to structured task objects
+        const tasks = items.map((text: string) => ({
+          title: text.length > 80 ? text.slice(0, 77) + "..." : text,
+          description: text,
+          service: null,
+          action: null,
+          params: null,
+          status: "pending",
+          source_context: {
+            page_title: sourceQuery ? `Search: ${sourceQuery}` : "Auto-suggestion",
+            current_url: "",
+          },
+        }));
+
+        // Save to backend so they appear on GoogleActivity page
+        const response = await fetch(`${API_BASE}/save_auto_suggestions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tasks }),
+        });
+        const data = await response.json();
+
+        // Send to notification bell via PREDICTED_TASKS_POPUP
+        const savedTasks = data.tasks || tasks.map((t: any, i: number) => ({ ...t, id: `auto-${Date.now()}-${i}` }));
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (tab?.id) {
+          chrome.tabs.sendMessage(tab.id, {
+            type: "PREDICTED_TASKS_POPUP",
+            payload: { tasks: savedTasks.slice(0, 5), trigger: "auto-suggest-dismissed" },
+          }).catch(() => {});
+        }
+
+        sendResponse({ success: true });
+      } catch (e: any) {
+        console.error("[cue] Failed to save auto-suggestions:", e);
+        sendResponse({ success: false, error: e?.message });
+      }
+    })();
+    return true;
+  }
+
   // Execute a suggested task (from auto-suggest popup)
   if (message.type === "EXECUTE_SUGGESTED_TASK") {
     (async () => {
@@ -1245,7 +1310,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             contextParts.push(`\n\nAdditional context: ${params.context}`);
           }
 
-          const fullPrompt = contextParts.join("");
+          let fullPrompt = contextParts.join("");
+          // If the task is about creating a document, prepend @docs so Ask AI / Gemini can create a doc
+          const promptLower = fullPrompt.toLowerCase();
+          const isDocTask = /\b(create|write|draft|make|start)\s+(a\s+)?(doc|document|google\s*doc)\b/.test(promptLower) ||
+            /\b(new|open)\s+(a\s+)?(doc|document)\b/.test(promptLower);
+          if (isDocTask && (service === "gemini_chat" || service === "openai_studio")) {
+            fullPrompt = fullPrompt.trimStart();
+            if (!fullPrompt.startsWith("@docs") && !fullPrompt.startsWith("@docs ")) {
+              fullPrompt = `@docs ${fullPrompt}`;
+            }
+          }
 
           let url = "";
           let userMessage = "";

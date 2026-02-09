@@ -567,7 +567,7 @@
   border-radius: 20px;
   border: 1px solid rgba(255, 255, 255, 0.5);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.12), 0 4px 12px rgba(0, 0, 0, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.6);
-  overflow: hidden;
+  overflow-y: auto;
 }
 
 .halo-context-header {
@@ -1304,6 +1304,32 @@
   border-radius: 4px;
 }
 
+.task-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.task-card-status-completed {
+  font-size: 10px;
+  font-weight: 600;
+  color: #34d399;
+  padding: 2px 6px;
+  background: rgba(52, 211, 153, 0.15);
+  border-radius: 4px;
+}
+
+.task-panel-card-completed .task-card-title,
+.task-panel-card-completed .task-card-description {
+  opacity: 0.85;
+}
+
+.task-panel-card-completed {
+  background: rgba(255, 255, 255, 0.03);
+}
+
 .task-card-actions {
   display: flex;
   gap: 6px;
@@ -1602,15 +1628,11 @@
   box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4);
 }
 
-/* Context Settings - visible on light context panel */
+/* Context Settings */
 .halo-context-settings {
   margin-top: 12px;
   padding-top: 12px;
   border-top: 1px solid rgba(0, 0, 0, 0.1);
-}
-
-.halo-context-panel .halo-context-settings .halo-context-section-title {
-  color: #374151;
 }
 
 .halo-settings-row {
@@ -1623,11 +1645,7 @@
 .halo-settings-label {
   font-size: 11px;
   font-weight: 600;
-  color: #374151;
-}
-
-.halo-context-panel .halo-settings-label {
-  color: #374151;
+  color: rgba(255, 255, 255, 0.7);
 }
 
 .halo-settings-select,
@@ -1635,18 +1653,11 @@
   padding: 6px 10px;
   font-size: 12px;
   border-radius: 8px;
-  border: 1px solid rgba(0, 0, 0, 0.15);
-  background: rgba(255, 255, 255, 0.9);
-  color: #1a1a2e;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+  color: #fafafa;
   outline: none;
   transition: border-color 0.2s;
-}
-
-.halo-context-panel .halo-settings-select,
-.halo-context-panel .halo-settings-input {
-  border: 1px solid rgba(0, 0, 0, 0.12);
-  background: rgba(255, 255, 255, 0.95);
-  color: #1a1a2e;
 }
 
 .halo-settings-select:focus,
@@ -1657,6 +1668,64 @@
 .halo-settings-select option {
   background: #1a1a2e;
   color: #fafafa;
+}
+
+/* ==================== Ask AI Chat Mic Button ==================== */
+
+.halo-chat-input-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.halo-chat-input-row .halo-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.halo-chat-mic-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.06);
+  color: #71717a;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+.halo-chat-mic-btn:hover {
+  background: rgba(139, 92, 246, 0.15);
+  color: #8b5cf6;
+}
+
+.halo-chat-mic-btn.listening {
+  background: linear-gradient(135deg, #ef4444, #dc2626);
+  color: white;
+  animation: mic-pulse 1.5s ease-in-out infinite;
+}
+
+.halo-chat-listening {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+/* Dark mode chat mic */
+@media (prefers-color-scheme: dark) {
+  .halo-chat-mic-btn {
+    background: rgba(255, 255, 255, 0.08);
+    color: #9ca3af;
+  }
+  .halo-chat-mic-btn:hover {
+    background: rgba(139, 92, 246, 0.2);
+    color: #a78bfa;
+  }
 }
 
 /* ==================== Voice Activation Toggle ==================== */
@@ -1674,11 +1743,7 @@
   gap: 6px;
   font-size: 12px;
   font-weight: 500;
-  color: #374151;
-}
-
-.halo-context-panel .halo-voice-toggle-label {
-  color: #374151;
+  color: #e5e7eb;
 }
 
 .halo-voice-status-dot {
@@ -1743,13 +1808,9 @@
 .halo-saved-suggestion-title {
   font-size: 11px;
   font-weight: 600;
-  color: #6b7280;
+  color: rgba(255, 255, 255, 0.6);
   text-transform: uppercase;
   letter-spacing: 0.5px;
-}
-
-.halo-context-panel .halo-saved-suggestion-title {
-  color: #6b7280;
 }
 
 .halo-saved-suggestion-grid {
@@ -1776,6 +1837,65 @@
 .halo-saved-suggestion-chip:hover {
   background: rgba(139, 92, 246, 0.25);
   border-color: rgba(139, 92, 246, 0.4);
+}
+
+/* ==================== Context Panel Light-Theme Overrides ==================== */
+/* The context panel has a white/glass background, so settings need dark text */
+.halo-context-panel .halo-settings-label {
+  color: #374151;
+}
+.halo-context-panel .halo-settings-select,
+.halo-context-panel .halo-settings-input {
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  background: rgba(255, 255, 255, 0.9);
+  color: #1a1a2e;
+}
+.halo-context-panel .halo-settings-select option {
+  background: #ffffff;
+  color: #1a1a2e;
+}
+.halo-context-panel .halo-voice-toggle-label {
+  color: #374151;
+}
+.halo-context-panel .halo-voice-switch {
+  background: rgba(0, 0, 0, 0.12);
+}
+.halo-context-panel .halo-voice-switch.on {
+  background: linear-gradient(135deg, #8b5cf6, #6d28d9);
+}
+.halo-context-panel .halo-saved-suggestion-title {
+  color: rgba(0, 0, 0, 0.5);
+}
+.voice-activation-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.04);
+  cursor: pointer;
+  font-size: 12px;
+  color: #374151;
+  transition: background 0.2s;
+}
+.voice-activation-toggle:hover {
+  background: rgba(0, 0, 0, 0.08);
+}
+.voice-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #9ca3af;
+  flex-shrink: 0;
+}
+.voice-status-dot.active {
+  background: #22c55e;
+  box-shadow: 0 0 6px rgba(34, 197, 94, 0.5);
+}
+.halo-settings-hint {
+  font-size: 11px;
+  color: #6b7280;
+  margin-top: 2px;
 }
 
 /* ==================== Voice Chat Popup ==================== */

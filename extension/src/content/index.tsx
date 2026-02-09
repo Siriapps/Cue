@@ -67,6 +67,13 @@ function initializeUI() {
 
     initChatCapture();
     initAutoSuggestions(haloStyles);
+    try {
+      fetch("http://127.0.0.1:7242/ingest/d175bd2d-d0e3-45e2-bafc-edc26c33de53", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ location: "index.tsx:initializeUI", message: "calling initVoiceChatPopup", data: {}, timestamp: Date.now() }),
+      }).catch(() => {});
+    } catch {}
     initVoiceChatPopup(haloStyles);
 
     // Start voice activation if enabled in settings

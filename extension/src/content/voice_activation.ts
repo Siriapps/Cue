@@ -102,32 +102,42 @@ export async function setWakePhrase(phrase: string): Promise<void> {
 }
 
 /**
+ * Normalize for matching: collapse spaces and trim.
+ */
+function normalizeForMatch(s: string): string {
+  return s.toLowerCase().trim().replace(/\s+/g, " ");
+}
+
+/**
  * Check if the transcript contains the wake phrase.
- * Also accepts "hey cue" as a shorter trigger when full phrase is "hey cue help me".
+ * Accepts full phrase, "hey cue", or just "cue" (with word boundaries so "cue" in "rescue" is optional).
  */
 function containsWakePhrase(transcript: string, wakePhrase: string): boolean {
-  const normalizedTranscript = transcript.toLowerCase().trim();
-  const normalizedPhrase = wakePhrase.toLowerCase().trim();
-  
+  const t = normalizeForMatch(transcript);
+  const phrase = normalizeForMatch(wakePhrase);
+  if (!t) return false;
+
   const variations = [
-    normalizedPhrase,
-    normalizedPhrase.replace("cue", "queue"),
-    normalizedPhrase.replace("cue", "q"),
-    normalizedPhrase.replace("cue", "cute"),
-    normalizedPhrase.replace("hey", "hay"),
-    normalizedPhrase.replace("hey", "hi"),
+    phrase,
+    phrase.replace(/cue/g, "queue"),
+    phrase.replace(/cue/g, "q"),
+    phrase.replace(/hey/g, "hay"),
+    phrase.replace(/hey/g, "hi"),
   ];
-  
-  if (variations.some((v) => normalizedTranscript.includes(v))) {
+
+  for (const v of variations) {
+    if (v && t.includes(v)) return true;
+  }
+
+  // "hey cue" / "hay cue" / "ok cue" / "okay cue"
+  const shortTriggers = ["hey cue", "hay cue", "hi cue", "hey queue", "ok cue", "okay cue"];
+  if (shortTriggers.some((tr) => t.includes(tr))) return true;
+
+  // Minimal trigger: word "cue" or "queue" (avoid matching "rescue" by requiring space or start)
+  if (phrase.includes("cue") && (/\b(cue|queue)\b/.test(t) || t.startsWith("cue") || t.startsWith("queue"))) {
     return true;
   }
-  
-  // Accept "hey cue" / "hay cue" etc. as trigger when full phrase contains it (e.g. "hey cue help me")
-  const shortTriggers = ["hey cue", "hay cue", "hi cue", "hey queue", "hay queue"];
-  if (shortTriggers.some((t) => normalizedTranscript.includes(t) && normalizedPhrase.includes("cue"))) {
-    return true;
-  }
-  
+
   return false;
 }
 
@@ -140,6 +150,7 @@ function dispatchActivationEvent(transcript: string): void {
   const event = new CustomEvent("cue:voice-activated", {
     detail: { transcript, wakePhrase: currentWakePhrase },
     bubbles: true,
+    composed: true,
   });
   window.dispatchEvent(event);
 }
@@ -154,9 +165,21 @@ export function isSpeechRecognitionSupported(): boolean {
 /**
  * Start the voice activation listener
  */
+// #region agent log
+function _voiceDebug(location: string, message: string, data: Record<string, unknown>): void {
+  try {
+    fetch("http://127.0.0.1:7242/ingest/d175bd2d-d0e3-45e2-bafc-edc26c33de53", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ location, message, data, timestamp: Date.now() }),
+    }).catch(() => {});
+  } catch {}
+}
+// #endregion
+
 export async function startVoiceActivation(): Promise<boolean> {
   console.log("[cue] startVoiceActivation called, current state:", { isListening, shouldBeListening, isPaused, hasRecognition: !!recognition });
-  
+  _voiceDebug("voice_activation.ts:startVoiceActivation", "entry", { isListening, shouldBeListening, isPaused });
   if (!isSpeechRecognitionSupported()) {
     console.warn("[cue] Speech Recognition not supported in this browser");
     return false;
@@ -213,6 +236,7 @@ export async function startVoiceActivation(): Promise<boolean> {
         const transcript = result[j].transcript;
         
         if (containsWakePhrase(transcript, currentWakePhrase)) {
+          _voiceDebug("voice_activation.ts:onresult", "wake phrase detected", { transcript: transcript.slice(0, 80) });
           // Temporarily disable to prevent multiple triggers
           isActivationEnabled = false;
           dispatchActivationEvent(transcript);
@@ -232,22 +256,26 @@ export async function startVoiceActivation(): Promise<boolean> {
   const RECOVERABLE_ERROR_THROTTLE_MS = 8000;
 
   recognition.onerror = (event) => {
+    const err = String((event as Event & { error?: string }).error ?? "").toLowerCase();
+    _voiceDebug("voice_activation.ts:onerror", "speech error", { err, raw: (event as Event & { error?: string }).error });
     // Don't restart on "not-allowed" or "service-not-allowed" errors
-    if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+    if (err === "not-allowed" || err === "service-not-allowed") {
       isListening = false;
-      console.warn("[cue] Speech recognition permission denied:", event.error);
+      console.warn("[cue] Speech recognition permission denied:", err);
       window.dispatchEvent(new CustomEvent("cue:voice-permission-denied"));
       return;
     }
+    // "aborted" is expected when we call recognition.abort() (e.g. when pausing or opening popup) - do not log
+    if (err === "aborted") return;
     // no-speech is expected during silence - throttle logging to avoid console spam
-    if (event.error === "no-speech") {
+    if (err === "no-speech") {
       const now = Date.now();
       if (now - lastRecoverableError > RECOVERABLE_ERROR_THROTTLE_MS) {
         lastRecoverableError = now;
         console.debug("[cue] No speech detected (will auto-restart)");
       }
     } else {
-      console.warn("[cue] Speech recognition error:", event.error);
+      console.warn("[cue] Speech recognition error:", err || (event as Event & { error?: string }).error);
     }
   };
 
@@ -286,8 +314,10 @@ export async function startVoiceActivation(): Promise<boolean> {
 
   try {
     recognition.start();
+    _voiceDebug("voice_activation.ts:startVoiceActivation", "recognition.start() ok", {});
     return true;
   } catch (error) {
+    _voiceDebug("voice_activation.ts:startVoiceActivation", "recognition.start() threw", { err: String(error) });
     console.error("[cue] Failed to start speech recognition:", error);
     isListening = false;
     return false;

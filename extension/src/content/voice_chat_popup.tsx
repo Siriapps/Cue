@@ -80,6 +80,13 @@ export function initVoiceChatPopup(haloStyles: string): void {
 
     const root = createRoot(container);
     root.render(<VoiceChatPopup />);
+    try {
+      fetch("http://127.0.0.1:7242/ingest/d175bd2d-d0e3-45e2-bafc-edc26c33de53", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ location: "voice_chat_popup.tsx:initVoiceChatPopup", message: "popup mounted", data: {}, timestamp: Date.now() }),
+      }).catch(() => {});
+    } catch {}
   } catch (error) {
     console.error("[cue] Failed to initialize voice chat popup:", error);
   }
@@ -99,26 +106,44 @@ export function VoiceChatPopup(): React.JSX.Element {
 
   // Listen for voice activation event (triggered by wake phrase)
   useEffect(() => {
-    const handleVoiceActivation = () => {
-      console.log("[cue] Voice chat popup: received cue:voice-activated");
-      // Pause wake phrase listener first
+    const handleVoiceActivation = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      console.log("[cue] Voice chat popup: received cue:voice-activated", detail);
+      try {
+        fetch("http://127.0.0.1:7242/ingest/d175bd2d-d0e3-45e2-bafc-edc26c33de53", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ location: "voice_chat_popup.tsx:handleVoiceActivation", message: "cue:voice-activated received", data: {}, timestamp: Date.now() }),
+        }).catch(() => {});
+      } catch {}
       pauseVoiceActivation();
-      
       setIsOpen(true);
-      // Auto-start listening when activated by voice - give more time for wake phrase listener to stop
       setTimeout(() => {
         startListening();
-      }, 600);
+      }, 350);
     };
 
-    // Listen for manual open (button click) - don't auto-start mic
     const handleManualOpen = () => {
+      try {
+        fetch("http://127.0.0.1:7242/ingest/d175bd2d-d0e3-45e2-bafc-edc26c33de53", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ location: "voice_chat_popup.tsx:handleManualOpen", message: "cue:open-voice-chat received", data: {}, timestamp: Date.now() }),
+        }).catch(() => {});
+      } catch {}
+      pauseVoiceActivation();
       setIsOpen(true);
-      // Focus input instead of starting mic for manual opens
     };
 
     window.addEventListener("cue:voice-activated", handleVoiceActivation);
     window.addEventListener("cue:open-voice-chat", handleManualOpen);
+    try {
+      fetch("http://127.0.0.1:7242/ingest/d175bd2d-d0e3-45e2-bafc-edc26c33de53", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ location: "voice_chat_popup.tsx:useEffect", message: "listeners attached", data: {}, timestamp: Date.now() }),
+      }).catch(() => {});
+    } catch {}
     return () => {
       window.removeEventListener("cue:voice-activated", handleVoiceActivation);
       window.removeEventListener("cue:open-voice-chat", handleManualOpen);
@@ -177,7 +202,7 @@ export function VoiceChatPopup(): React.JSX.Element {
     const SpeechRecognitionClass = window.SpeechRecognition || window.webkitSpeechRecognition;
     const recognition = new SpeechRecognitionClass();
 
-    recognition.continuous = false;
+    recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = "en-US";
 
@@ -208,7 +233,21 @@ export function VoiceChatPopup(): React.JSX.Element {
     };
 
     recognition.onerror = (event) => {
-      console.warn("[cue] Voice input error:", event.error);
+      const err = String((event as Event & { error?: string }).error ?? "").toLowerCase();
+      try {
+        fetch("http://127.0.0.1:7242/ingest/d175bd2d-d0e3-45e2-bafc-edc26c33de53", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ location: "voice_chat_popup.tsx:onerror", message: "voice input error", data: { err }, timestamp: Date.now() }),
+        }).catch(() => {});
+      } catch {}
+      // "aborted" is expected when we stop recognition or when another instance takes the mic - do not log
+      if (err === "aborted") {
+        setIsListening(false);
+        setInterimTranscript("");
+        return;
+      }
+      console.warn("[cue] Voice input error:", err || (event as Event & { error?: string }).error);
       setIsListening(false);
       setInterimTranscript("");
     };
@@ -220,12 +259,15 @@ export function VoiceChatPopup(): React.JSX.Element {
 
     recognitionRef.current = recognition;
 
-    try {
-      recognition.start();
-    } catch (error) {
-      console.error("[cue] Failed to start voice input:", error);
-      setIsListening(false);
-    }
+    // Short delay so any previous recognition (e.g. wake phrase) has released the mic
+    setTimeout(() => {
+      try {
+        recognition.start();
+      } catch (error) {
+        console.error("[cue] Failed to start voice input:", error);
+        setIsListening(false);
+      }
+    }, 200);
   }, []);
 
   const stopListening = useCallback(() => {
@@ -444,10 +486,13 @@ export function VoiceChatPopup(): React.JSX.Element {
 }
 
 /**
- * Programmatically open the voice chat popup
+ * Programmatically open the voice chat popup.
+ * Delays opening so the wake-phrase recognition can release the mic first.
  */
 export function openVoiceChatPopup(): void {
-  // Pause wake phrase listener before opening
   pauseVoiceActivation();
-  window.dispatchEvent(new CustomEvent("cue:open-voice-chat"));
+  // Give the browser time to release the mic before popup opens (avoids "microphone in use")
+  setTimeout(() => {
+    window.dispatchEvent(new CustomEvent("cue:open-voice-chat"));
+  }, 350);
 }

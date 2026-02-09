@@ -157,6 +157,11 @@ function GoogleActivity({ lastActivityUpdate = 0, user }) {
         openai_studio: (p) => `https://chat.openai.com/?q=${encodeURIComponent(p?.prompt || command)}`,
       };
       if (URL_SERVICES[service]) {
+        // Copy prompt/context to clipboard for gemini_chat and antigravity
+        const promptText = task.params?.prompt || task.params?.context || task.description || task.title || '';
+        if (promptText && navigator.clipboard) {
+          try { await navigator.clipboard.writeText(promptText); } catch { /* clipboard unavailable */ }
+        }
         const openUrl = URL_SERVICES[service](task.params);
         window.open(openUrl, '_blank');
         await fetch(`${ADK_API_URL}/suggested_tasks/${taskId}`, {

@@ -201,6 +201,10 @@ class ProcessAudioChunkRequest(BaseModel):
     source_url: Optional[str] = None
 
 
+class ConversationMessage(BaseModel):
+    role: str
+    text: str
+
 class AskAIRequest(BaseModel):
     query: str
     page_title: Optional[str] = None
@@ -209,6 +213,7 @@ class AskAIRequest(BaseModel):
     user_display_name: Optional[str] = None
     user_email: Optional[str] = None
     context_blob: Optional[str] = None
+    conversation_history: Optional[List[ConversationMessage]] = None
 
 
 class SuggestRequest(BaseModel):
@@ -365,7 +370,11 @@ async def ask_ai_endpoint(payload: AskAIRequest) -> Dict[str, Any]:
             context["recent_activity"] = ""
     except Exception:
         context["recent_activity"] = ""
-    result = ask_ai(payload.query, context)
+    # Pass conversation history for multi-turn voice chat
+    conv_history = None
+    if payload.conversation_history:
+        conv_history = [{"role": m.role, "text": m.text} for m in payload.conversation_history]
+    result = ask_ai(payload.query, context, conversation_history=conv_history)
     return result
 
 
@@ -499,35 +508,34 @@ async def suggest_tasks_endpoint(payload: SuggestTasksRequest) -> Dict[str, Any]
 
 {full_context}
 
-Based on this context, generate 1-5 concrete, actionable tasks that would be useful for the user.
+Generate 3-5 tasks that would be useful for the user. You MUST include:
 
-For each task that can be done via Google services (Gmail, Calendar, Tasks, Docs, Drive, Sheets) or Antigravity (IDE prompt pasting), include the service, action, and params so the system can execute them when the user accepts.
+1. **At least 2 tasks** that use the user's connected Google services (gmail, calendar, tasks, docs, drive, sheets). These should be concrete and actionable (e.g. draft an email, add a calendar event, create a doc, add a task). Use the context to make them relevant (names, subjects, dates).
 
-Services and actions:
+2. **Optionally 1-2 "chat continuation" tasks** where the user might want to continue a thought or ask a follow-up — use service "gemini_chat" with action "open" and params with "prompt" (the full question to ask Gemini) and "context" (brief context). These appear as clickable suggestions; when accepted, they open Gemini with the prompt ready.
+
+3. **At most 1 wellness/break suggestion** (e.g. "Take a 5-minute break", "Stretch and rest your eyes"). Use service null, action null, params null.
+
+Services and actions (use for Google and AI tasks):
 - gmail: draft (to, subject, body), send (to, subject, body)
 - calendar: create (title/summary, description, date, time)
 - tasks: add (title, notes, due)
 - docs: create (title, content)
 - sheets: create (title)
-- gemini_chat: open (prompt - the full question/prompt to ask Gemini, context - any helpful context)
-- antigravity: search (prompt - the search/research prompt with full context)
-- openai_studio: open (prompt - the full question/prompt to ask ChatGPT)
+- gemini_chat: open (prompt - full question/prompt for Gemini, context - optional brief context). Use for "continue this conversation", "ask Gemini about X", follow-up questions.
+- antigravity: search (prompt - research prompt)
+- openai_studio: open (prompt - for ChatGPT)
 
-Be specific and use context (e.g., hackathon name, project ideas, email subjects) so created docs/emails/events are relevant.
+Be specific. All tasks are saved and shown in the user's notifications and AI activity page; chat-style ones (gemini_chat) open Gemini with the prompt when accepted.
 
-Return ONLY a JSON array of objects with these fields:
-- title: short task label (string)
-- description: one or two sentences (string)
-- service: one of gmail, calendar, tasks, docs, sheets, gemini_chat, antigravity, openai_studio, or null if informational only
-- action: the action name or null
-- params: object with fields needed for the action, or null
+Return ONLY a JSON array of objects with: title (string), description (string), service (string or null), action (string or null), params (object or null).
 
 Example:
 [
   {{"title": "Draft hackathon submission email", "description": "Prepare email to submit your hackathon project", "service": "gmail", "action": "draft", "params": {{"to": "hackathon@example.com", "subject": "Hackathon Submission", "body": "Hi,\\n\\nPlease find attached our hackathon submission..."}}}},
-  {{"title": "Create project plan document", "description": "Document outlining the project roadmap", "service": "docs", "action": "create", "params": {{"title": "Project Plan", "content": "# Project Plan\\n\\n## Goals\\n..."}}}},
-  {{"title": "Ask Gemini about API integration", "description": "Get help with integrating the Gemini API", "service": "gemini_chat", "action": "open", "params": {{"prompt": "How do I integrate the Gemini API with my React application? I need to handle streaming responses and error handling.", "context": "Working on a hackathon project"}}}},
-  {{"title": "Research latest AI trends", "description": "Use Antigravity to research AI developments", "service": "antigravity", "action": "search", "params": {{"prompt": "What are the latest developments in multimodal AI models for 2024? Focus on practical applications."}}}}
+  {{"title": "Add team sync to calendar", "description": "Schedule a 30-min team sync this week", "service": "calendar", "action": "create", "params": {{"title": "Team sync", "description": "Weekly sync", "date": "", "time": ""}}}},
+  {{"title": "Ask Gemini to summarize next steps", "description": "Get a short summary of next steps from your recent context", "service": "gemini_chat", "action": "open", "params": {{"prompt": "Based on what I've been working on, give me 3 concrete next steps.", "context": "User's recent browsing and tasks"}}}},
+  {{"title": "Take a short break", "description": "Stand up, stretch, and rest your eyes for 5 minutes.", "service": null, "action": null, "params": null}}
 ]
 
 Return ONLY the JSON array, no markdown or explanation."""
@@ -614,6 +622,37 @@ Return ONLY the JSON array, no markdown or explanation."""
         print(f"[cue] Error in suggest_tasks: {e}")
         import traceback
         traceback.print_exc()
+        return {"success": False, "error": str(e), "tasks": []}
+
+
+class SaveAutoSuggestionsRequest(BaseModel):
+    tasks: List[Dict[str, Any]]
+
+
+@app.post("/save_auto_suggestions")
+async def save_auto_suggestions(payload: SaveAutoSuggestionsRequest) -> Dict[str, Any]:
+    """Save auto-suggestion text items as pending suggested tasks."""
+    try:
+        saved = []
+        for task in payload.tasks[:5]:
+            task_data = {
+                "title": task.get("title", "Suggestion"),
+                "description": task.get("description", ""),
+                "service": task.get("service"),
+                "action": task.get("action"),
+                "params": task.get("params"),
+                "status": "pending",
+                "source_context": task.get("source_context", {}),
+            }
+            task_id = save_suggested_task(task_data)
+            task_data["id"] = task_id
+            saved.append(task_data)
+
+        if saved:
+            await dashboard_manager.broadcast({"type": "SUGGESTED_TASKS_UPDATE"})
+        return {"success": True, "tasks": serialize_doc(saved)}
+    except Exception as e:
+        print(f"[cue] Error saving auto-suggestions: {e}")
         return {"success": False, "error": str(e), "tasks": []}
 
 

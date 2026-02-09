@@ -25,8 +25,9 @@ const DEFAULT_POSITIONS = {
   'tasks-completed': { x: 380, y: 340 },
   'insights': { x: 780, y: 180 },
   'productivity-stats': { x: 1000, y: 350 },
-  'join-btn': { x: 600, y: 530 },
-  'github-icon': { x: 665, y: 790 },
+  'top-site-0': { x: 570, y: 530 },
+  'top-site-1': { x: 640, y: 530 },
+  'top-site-2': { x: 710, y: 530 },
   // Comms hub – upper middle
   'comms': { x: 1100, y: 120 },
   'gmail-card': { x: 1300, y: 80 },
@@ -42,6 +43,12 @@ const DEFAULT_POSITIONS = {
   'hackathon-count': { x: 90, y: 430 },
   'hackathon-done': { x: 40, y: 540 },
   'hackathon-suggested': { x: 460, y: 540 },
+  // Daily habit card – near today-date
+  'daily-habit': { x: 420, y: 730 },
+  // AI Queue – pending MCP tasks
+  'ai-queue': { x: 1100, y: 550 },
+  // Gmail action cards
+  'gmail-actions': { x: 1350, y: 200 },
 };
 
 // Neural edges: hub center to its cards only (match reference layout)
@@ -58,6 +65,9 @@ const NEURAL_EDGES = [
   ['hackathon', 'hackathon-count'],
   ['hackathon', 'hackathon-done'],
   ['hackathon', 'hackathon-suggested'],
+  ['today-date', 'daily-habit'],
+  ['comms', 'ai-queue'],
+  ['comms', 'gmail-actions'],
 ];
 
 // Loading steps for the workspace preparation animation
@@ -274,6 +284,99 @@ function MosaicField() {
     activities.forEach(a => { if (counts[a.service] !== undefined) counts[a.service]++; });
     return counts;
   }, [activities]);
+
+  // Top 3 most-used services for icon hubs
+  const topSites = useMemo(() => {
+    const serviceInfo = {
+      gmail: { label: 'Gmail', url: 'https://mail.google.com', color: '#EA4335', icon: 'M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z' },
+      calendar: { label: 'Calendar', url: 'https://calendar.google.com', color: '#4285F4', icon: 'M19 3h-1V1h-2v2H8V1H6v2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11zM9 10H7v2h2v-2zm4 0h-2v2h2v-2zm4 0h-2v2h2v-2z' },
+      docs: { label: 'Docs', url: 'https://docs.google.com', color: '#4285F4', icon: 'M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zM6 20V4h7v5h5v11H6zm2-6h8v2H8v-2zm0-3h8v2H8v-2z' },
+      sheets: { label: 'Sheets', url: 'https://sheets.google.com', color: '#0F9D58', icon: 'M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 2v3H5V5h14zM5 19v-9h6v9H5zm8 0v-9h6v9h-6z' },
+      drive: { label: 'Drive', url: 'https://drive.google.com', color: '#FBBC04', icon: 'M7.71 3.5L1.15 15l3.43 6 6.55-11.5L7.71 3.5zM12 12.5L8.57 18.5h13.72l3.42-6H12zm10.27-1L15.72 0H8.84l6.55 11.5h6.88z' },
+      tasks: { label: 'Tasks', url: 'https://tasks.google.com', color: '#4285F4', icon: 'M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z' },
+    };
+    return Object.entries(activityCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([service]) => serviceInfo[service] || { label: service, url: '#', color: '#6366f1', icon: '' });
+  }, [activityCounts]);
+
+  // Daily habit: detect most frequent browsing domain from sessions and suggest it
+  const dailyHabit = useMemo(() => {
+    // Look at session titles and activity patterns for recurring visits
+    const domainCounts = {};
+    sessions.forEach(s => {
+      const title = (s.title || '').toLowerCase();
+      // Extract common platforms from session titles
+      const platforms = ['leetcode', 'github', 'stackoverflow', 'youtube', 'figma', 'notion', 'slack', 'discord', 'reddit', 'twitter', 'linkedin'];
+      platforms.forEach(p => {
+        if (title.includes(p)) domainCounts[p] = (domainCounts[p] || 0) + 1;
+      });
+    });
+    // Also check recent activities for patterns
+    activities.forEach(a => {
+      const desc = ((a.description || '') + ' ' + (a.action || '')).toLowerCase();
+      const platforms = ['leetcode', 'github', 'stackoverflow', 'youtube', 'figma', 'notion'];
+      platforms.forEach(p => {
+        if (desc.includes(p)) domainCounts[p] = (domainCounts[p] || 0) + 1;
+      });
+    });
+    const top = Object.entries(domainCounts).sort((a, b) => b[1] - a[1])[0];
+    if (top && top[1] >= 2) {
+      const name = top[0].charAt(0).toUpperCase() + top[0].slice(1);
+      const urls = { leetcode: 'https://leetcode.com', github: 'https://github.com', stackoverflow: 'https://stackoverflow.com', youtube: 'https://youtube.com', figma: 'https://figma.com', notion: 'https://notion.so', slack: 'https://slack.com', discord: 'https://discord.com', reddit: 'https://reddit.com', twitter: 'https://twitter.com', linkedin: 'https://linkedin.com' };
+      return { name, count: top[1], url: urls[top[0]] || `https://${top[0]}.com` };
+    }
+    // Fallback: use top service activity
+    const topService = Object.entries(activityCounts).sort((a, b) => b[1] - a[1])[0];
+    if (topService && topService[1] > 0) {
+      const hobbyMap = { gmail: 'Email', docs: 'Docs', calendar: 'Calendar', tasks: 'Tasks', sheets: 'Sheets', drive: 'Drive' };
+      const urls = { gmail: 'https://mail.google.com', docs: 'https://docs.google.com', calendar: 'https://calendar.google.com', tasks: 'https://tasks.google.com', sheets: 'https://sheets.google.com', drive: 'https://drive.google.com' };
+      return { name: hobbyMap[topService[0]] || topService[0], count: topService[1], url: urls[topService[0]] || '#' };
+    }
+    return null;
+  }, [sessions, activities, activityCounts]);
+
+  // AI Queue: pending tasks that need MCP/Gemini actions (have a service set)
+  const aiQueueTasks = useMemo(() => {
+    return tasks
+      .filter(t => t.status === 'pending' && t.service && t.service !== 'null')
+      .slice(0, 5);
+  }, [tasks]);
+
+  // Gmail action suggestions based on unread count and summary
+  const gmailActions = useMemo(() => {
+    const actions = [];
+    if (gmailUnread > 5) actions.push({ text: 'Triage unread emails', icon: '📥' });
+    if (gmailSummary && gmailSummary.toLowerCase().includes('reply')) actions.push({ text: 'Reply to important emails', icon: '✉️' });
+    if (gmailUnread > 10) actions.push({ text: 'Archive old newsletters', icon: '🗂️' });
+    if (actions.length === 0 && gmailUnread > 0) actions.push({ text: `Review ${gmailUnread} unread`, icon: '📧' });
+    return actions.slice(0, 3);
+  }, [gmailUnread, gmailSummary]);
+
+  // Dynamic focus hubs: auto-detect focus areas from tasks with 3+ pending in same category
+  const dynamicFocusHubs = useMemo(() => {
+    const categories = {};
+    tasks.filter(t => t.status === 'pending').forEach(t => {
+      const text = ((t.title || '') + ' ' + (t.description || '')).toLowerCase();
+      const keywords = ['email', 'meeting', 'document', 'research', 'design', 'coding', 'testing', 'deployment', 'review', 'planning'];
+      keywords.forEach(kw => {
+        if (text.includes(kw)) {
+          if (!categories[kw]) categories[kw] = [];
+          categories[kw].push(t);
+        }
+      });
+    });
+    return Object.entries(categories)
+      .filter(([, tasks]) => tasks.length >= 3)
+      .slice(0, 3)
+      .map(([keyword, matchedTasks], i) => ({
+        id: `focus-${keyword}`,
+        name: keyword.charAt(0).toUpperCase() + keyword.slice(1) + ' Focus',
+        tasks: matchedTasks,
+        position: { x: 200 + i * 280, y: 650 },
+      }));
+  }, [tasks]);
 
   const personalityScores = useMemo(() => {
     const scores = { Analytical: 0.7, 'Future-Oriented': 0.6, Structured: 0.7, Engaged: 0.5 };
@@ -542,7 +645,10 @@ function MosaicField() {
     else if (id === 'hackathon' || id === 'hackathon-count') size = { width: 160, height: 100 };
     else if (id === 'gmail-card') size = { width: 260, height: 100 };
     else if (id === 'productivity-stats') size = PRODUCTIVITY_HUB_SIZE;
-    else if (id === 'github-icon' || id === 'join-btn') size = ICON_SIZE;
+    else if (id.startsWith('top-site-')) size = ICON_SIZE;
+    else if (id === 'daily-habit') size = { width: 220, height: 100 };
+    else if (id === 'ai-queue') size = { width: 260, height: 200 };
+    else if (id === 'gmail-actions') size = { width: 220, height: 120 };
     return { id, x: pos.x + (size.width || 0) / 2, y: pos.y + (size.height || 0) / 2 };
   });
 
@@ -752,26 +858,19 @@ function MosaicField() {
             </div>
           </Draggable>
 
-          {/* ===== GITHUB ICON ===== */}
-          <Draggable position={hubPositions['github-icon'] || DEFAULT_POSITIONS['github-icon']}
-            onDrag={(e, d) => handleHubDrag('github-icon', e, d)} onStop={(e, d) => handleHubDragStop('github-icon', e, d)}>
-            <div className="mosaic-hub-card icon-hub github-icon-hub" style={{ width: ICON_SIZE.width, height: ICON_SIZE.height }}>
-              <svg viewBox="0 0 24 24" width="32" height="32" fill="white">
-                <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z" />
-              </svg>
-            </div>
-          </Draggable>
-
-          {/* ===== JOIN VIDEO BUTTON ===== */}
-          <Draggable position={hubPositions['join-btn'] || DEFAULT_POSITIONS['join-btn']}
-            onDrag={(e, d) => handleHubDrag('join-btn', e, d)} onStop={(e, d) => handleHubDragStop('join-btn', e, d)}>
-            <div className="mosaic-hub-card icon-hub join-btn-hub" style={{ width: ICON_SIZE.width, height: ICON_SIZE.height }}>
-              <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#34a853" strokeWidth="2">
-                <rect x="2" y="4" width="14" height="14" rx="2" /><path d="M16 10l5-3v10l-5-3" />
-              </svg>
-              <span className="join-label">Join</span>
-            </div>
-          </Draggable>
+          {/* ===== TOP 3 MOST-USED SITES ===== */}
+          {topSites.map((site, i) => (
+            <Draggable key={`top-site-${i}`} position={hubPositions[`top-site-${i}`] || DEFAULT_POSITIONS[`top-site-${i}`]}
+              onDrag={(e, d) => handleHubDrag(`top-site-${i}`, e, d)} onStop={(e, d) => handleHubDragStop(`top-site-${i}`, e, d)}>
+              <div className="mosaic-hub-card icon-hub top-site-hub" style={{ width: ICON_SIZE.width, height: ICON_SIZE.height, borderColor: site.color + '40' }}
+                onClick={() => window.open(site.url, '_blank')} title={site.label}>
+                <svg viewBox="0 0 24 24" width="28" height="28" fill={site.color}>
+                  <path d={site.icon} />
+                </svg>
+                <span className="top-site-label">{site.label}</span>
+              </div>
+            </Draggable>
+          ))}
 
           {/* ===== TO DO HUB ===== */}
           <Draggable position={hubPositions['todo'] || DEFAULT_POSITIONS['todo']}
@@ -884,6 +983,77 @@ function MosaicField() {
               <span className="today-month">{todayMonth}</span>
             </div>
           </Draggable>
+
+          {/* ===== DAILY HABIT CARD (near today-date) ===== */}
+          {dailyHabit && (
+            <Draggable position={hubPositions['daily-habit'] || DEFAULT_POSITIONS['daily-habit']}
+              onDrag={(e, d) => handleHubDrag('daily-habit', e, d)} onStop={(e, d) => handleHubDragStop('daily-habit', e, d)}>
+              <div className="mosaic-hub-card glassmorphic daily-habit-card" style={{ width: 220, minHeight: 90 }}
+                onClick={() => dailyHabit.url && window.open(dailyHabit.url, '_blank')}>
+                <div className="hub-badge daily">DAILY HABIT</div>
+                <div className="daily-habit-prompt">
+                  <span className="daily-habit-icon">🎯</span>
+                  <span className="daily-habit-text">Practice {dailyHabit.name} today?</span>
+                </div>
+                <div className="daily-habit-streak">visited {dailyHabit.count}× recently</div>
+              </div>
+            </Draggable>
+          )}
+
+          {/* ===== GMAIL ACTION SUGGESTIONS ===== */}
+          {gmailActions.length > 0 && (
+            <Draggable position={hubPositions['gmail-actions'] || DEFAULT_POSITIONS['gmail-actions']}
+              onDrag={(e, d) => handleHubDrag('gmail-actions', e, d)} onStop={(e, d) => handleHubDragStop('gmail-actions', e, d)}>
+              <div className="mosaic-hub-card glassmorphic" style={{ width: 220, minHeight: 80 }}>
+                <div className="hub-badge">INBOX ACTIONS</div>
+                {gmailActions.map((a, i) => (
+                  <div key={i} className="mosaic-task-item gmail-action-item"
+                    onClick={() => window.open('https://mail.google.com', '_blank')}>
+                    <span>{a.icon}</span>
+                    <span className="task-text">{a.text}</span>
+                  </div>
+                ))}
+              </div>
+            </Draggable>
+          )}
+
+          {/* ===== AI QUEUE (pending MCP tasks) ===== */}
+          {aiQueueTasks.length > 0 && (
+            <Draggable position={hubPositions['ai-queue'] || DEFAULT_POSITIONS['ai-queue']}
+              onDrag={(e, d) => handleHubDrag('ai-queue', e, d)} onStop={(e, d) => handleHubDragStop('ai-queue', e, d)}>
+              <div className="mosaic-hub-card glassmorphic ai-queue-hub" style={{ width: 260, minHeight: 140 }}
+                onClick={() => setExpandedHubId('ai-queue')}>
+                <div className="hub-badge ai-queue">AI QUEUE</div>
+                <div className="ai-queue-list">
+                  {aiQueueTasks.slice(0, 4).map((t, i) => (
+                    <div key={t._id || i} className="mosaic-task-item ai-queue-item">
+                      <span className="task-status-dot pending" />
+                      <span className="task-text">{(t.title || '').substring(0, 35)}</span>
+                      {t.service && <span className="ai-queue-service">{t.service}</span>}
+                    </div>
+                  ))}
+                </div>
+                <div className="ai-queue-count">{aiQueueTasks.length} task{aiQueueTasks.length !== 1 ? 's' : ''} ready</div>
+              </div>
+            </Draggable>
+          )}
+
+          {/* ===== DYNAMIC FOCUS HUBS (auto-created from task patterns) ===== */}
+          {dynamicFocusHubs.map(hub => (
+            <Draggable key={hub.id} position={hubPositions[hub.id] || hub.position}
+              onDrag={(e, d) => handleHubDrag(hub.id, e, d)} onStop={(e, d) => handleHubDragStop(hub.id, e, d)}>
+              <div className="mosaic-hub-card glassmorphic dynamic-focus-hub" style={{ width: 240, minHeight: 120 }}
+                onClick={() => setExpandedHubId(hub.id)}>
+                <div className="hub-badge focus">{hub.name.toUpperCase()}</div>
+                <div className="hub-content">
+                  <span className="custom-hub-count">{hub.tasks.length} tasks</span>
+                  {hub.tasks.slice(0, 2).map((t, i) => (
+                    <div key={t._id || i} className="mosaic-task-item"><span className="task-status-dot pending" />{(t.title || '').substring(0, 35)}</div>
+                  ))}
+                </div>
+              </div>
+            </Draggable>
+          ))}
 
           {/* ===== PRODUCTIVITY STATS CARD (optional; main circle is productivity hub) ===== */}
           <Draggable position={hubPositions['productivity-stats'] || DEFAULT_POSITIONS['productivity-stats']}
@@ -1173,6 +1343,41 @@ function MosaicField() {
                       ))}
                     </div>
                   )}
+                </>
+              );
+            })()}
+
+            {expandedHubId === 'ai-queue' && (
+              <>
+                <h3>AI Queue</h3>
+                <p className="mosaic-muted">{aiQueueTasks.length} tasks ready for execution</p>
+                {aiQueueTasks.map((t, i) => (
+                  <div key={t._id || i} className="mosaic-task-item" style={{ marginBottom: 8 }}>
+                    <span className="task-status-dot pending" />
+                    <div style={{ flex: 1 }}>
+                      <div className="task-text" style={{ fontWeight: 600 }}>{t.title}</div>
+                      {t.description && <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>{t.description.substring(0, 100)}</div>}
+                      {t.service && <span className="ai-queue-service" style={{ marginTop: 4 }}>{t.service} → {t.action || 'execute'}</span>}
+                    </div>
+                  </div>
+                ))}
+                {aiQueueTasks.length === 0 && <p className="mosaic-muted">No tasks in queue.</p>}
+              </>
+            )}
+
+            {expandedHubId && expandedHubId.startsWith('focus-') && (() => {
+              const hub = dynamicFocusHubs.find(h => h.id === expandedHubId);
+              if (!hub) return null;
+              return (
+                <>
+                  <h3>{hub.name}</h3>
+                  <p className="mosaic-muted">{hub.tasks.length} tasks in this focus area</p>
+                  {hub.tasks.map((t, i) => (
+                    <div key={t._id || i} className="mosaic-task-item">
+                      <span className="task-status-dot pending" />
+                      <span className="task-text">{t.title || t.description}</span>
+                    </div>
+                  ))}
                 </>
               );
             })()}

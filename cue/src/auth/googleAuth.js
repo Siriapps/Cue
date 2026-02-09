@@ -11,18 +11,12 @@ const STORAGE_KEYS = {
 };
 
 // Get stored user
+// Returns user even if token expired — keeps user logged in visually.
+// Token validity should be checked separately when making API calls.
 export function getStoredUser() {
   try {
     const userStr = localStorage.getItem(STORAGE_KEYS.USER);
     if (!userStr) return null;
-
-    const expiry = localStorage.getItem(STORAGE_KEYS.EXPIRY);
-    if (expiry && Date.now() > parseInt(expiry, 10)) {
-      // Token expired, clear storage
-      clearAuth();
-      return null;
-    }
-
     return JSON.parse(userStr);
   } catch (e) {
     console.error('[cue] Error getting stored user:', e);
@@ -30,12 +24,22 @@ export function getStoredUser() {
   }
 }
 
-// Get stored token
+// Check if the stored token is still valid
+export function isTokenExpired() {
+  try {
+    const expiry = localStorage.getItem(STORAGE_KEYS.EXPIRY);
+    if (!expiry) return true;
+    return Date.now() > parseInt(expiry, 10);
+  } catch {
+    return true;
+  }
+}
+
+// Get stored token (returns null if expired, but does NOT clear user data)
 export function getStoredToken() {
   try {
     const expiry = localStorage.getItem(STORAGE_KEYS.EXPIRY);
     if (expiry && Date.now() > parseInt(expiry, 10)) {
-      clearAuth();
       return null;
     }
     return localStorage.getItem(STORAGE_KEYS.TOKEN);

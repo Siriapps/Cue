@@ -44,7 +44,7 @@ export async function startMicRecording(): Promise<void> {
       console.error("[cue] MediaRecorder error:", event);
     };
 
-    mediaRecorder.start(1000); // Collect chunks every second
+    mediaRecorder.start(5000); // Collect chunks every 5second
     isRecording = true;
     console.log("[cue] Microphone recording started");
   } catch (error: any) {

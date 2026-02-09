@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState, useCallback, useRef } from "react"
 import { startGoLive, stopGoLive } from "./go_live";
 import { summarizePage } from "./readability";
 import { startMicRecording, pauseMicRecording, resumeMicRecording, stopMicRecording } from "./session_recorder";
+import { openVoiceChatPopup } from "./voice_chat_popup";
 import type { CueContext } from "../shared/context_store";
 
 const LIBRARY_URL = import.meta.env.VITE_LIBRARY_URL || "http://localhost:3001";
@@ -71,7 +72,11 @@ export function HaloStrip(): React.JSX.Element {
 
   // Auto-suggest state
   const [autoSuggestDelayMs, setAutoSuggestDelayMs] = useState(60000);
-  const [savedSuggestions, setSavedSuggestions] = useState<string[]>([]);
+
+  // Ask AI voice input state
+  const [chatMicListening, setChatMicListening] = useState(false);
+  const [chatInterimTranscript, setChatInterimTranscript] = useState("");
+  const chatRecognitionRef = useRef<any>(null);
 
   // Predicted tasks popup state
   type SuggestedTask = {
@@ -81,6 +86,7 @@ export function HaloStrip(): React.JSX.Element {
     service?: string | null;
     action?: string | null;
     params?: Record<string, unknown> | null;
+    status?: "pending" | "in_progress" | "completed" | "dismissed";
   };
   const [predictedTasks, setPredictedTasks] = useState<SuggestedTask[]>([]);
   const [executingTaskId, setExecutingTaskId] = useState<string | null>(null);
@@ -155,7 +161,11 @@ export function HaloStrip(): React.JSX.Element {
         if (p.tasks && p.tasks.length > 0) {
           console.log(`[cue] Setting ${p.tasks.length} predicted tasks`);
           // Normalize id so dashboard (_id) and extension (id) stay in sync
-          const normalized = p.tasks.slice(0, 5).map((t) => ({ ...t, id: t.id ?? (t as { _id?: string })._id }));
+          const normalized = p.tasks.slice(0, 5).map((t) => ({
+            ...t,
+            id: t.id ?? (t as { _id?: string })._id,
+            status: (t as SuggestedTask).status ?? "pending",
+          }));
           setPredictedTasks(normalized);
         }
       }
@@ -164,8 +174,10 @@ export function HaloStrip(): React.JSX.Element {
         const p = message.payload as { success?: boolean; taskId?: string; error?: string; open_url?: string; message?: string; promptCopied?: boolean };
         setExecutingTaskId(null);
         if (p.success && p.taskId) {
-          // Remove completed task from list
-          setPredictedTasks((prev) => prev.filter((t) => t.id !== p.taskId));
+          // Mark task as completed in the list so it stays visible in notifications and matches AI activity
+          setPredictedTasks((prev) =>
+            prev.map((t) => (t.id === p.taskId ? { ...t, status: "completed" as const } : t))
+          );
         }
         // Show toast notification if prompt was copied or there's a message
         if (p.promptCopied && p.message) {
@@ -251,13 +263,11 @@ export function HaloStrip(): React.JSX.Element {
         "cue_voice_activation_enabled_v1",
         "cue_wake_phrase_v1",
         "cue_auto_suggest_delay_ms_v1",
-        "cue_last_suggestions_v1",
       ], (result) => {
         if (chrome.runtime.lastError) return;
         if (result.cue_voice_activation_enabled_v1 !== undefined) setVoiceActivationEnabled(!!result.cue_voice_activation_enabled_v1);
         if (result.cue_wake_phrase_v1) { setWakePhrase(result.cue_wake_phrase_v1); setWakePhraseInput(result.cue_wake_phrase_v1); }
         if (result.cue_auto_suggest_delay_ms_v1) setAutoSuggestDelayMs(Number(result.cue_auto_suggest_delay_ms_v1) || 60000);
-        if (result.cue_last_suggestions_v1?.items) setSavedSuggestions(result.cue_last_suggestions_v1.items);
       });
     } catch { /* ignore */ }
   }, []);
@@ -463,6 +473,66 @@ export function HaloStrip(): React.JSX.Element {
         console.error("[cue] Failed to open library window:", e);
       }
     }
+  };
+
+  // Replace spoken service names with @mentions for MCP commands
+  const replaceServiceKeywords = (text: string): string => {
+    const replacements: [RegExp, string][] = [
+      [/\bgmail\b/gi, "@gmail"],
+      [/\bcalendar\b/gi, "@calendar"],
+      [/\btasks?\b/gi, "@tasks"],
+      [/\bdocs?\b/gi, "@docs"],
+      [/\bsheets?\b/gi, "@sheets"],
+      [/\bdrive\b/gi, "@drive"],
+    ];
+    let result = text;
+    for (const [pattern, replacement] of replacements) {
+      // Don't double-replace if already has @
+      result = result.replace(pattern, (match, offset) => {
+        if (offset > 0 && result[offset - 1] === "@") return match;
+        return replacement;
+      });
+    }
+    return result;
+  };
+
+  // Chat mic toggle
+  const toggleChatMic = () => {
+    if (chatMicListening) {
+      // Stop
+      if (chatRecognitionRef.current) {
+        try { chatRecognitionRef.current.stop(); } catch { /* ignore */ }
+      }
+      setChatMicListening(false);
+      setChatInterimTranscript("");
+      return;
+    }
+    const SpeechRecognitionClass = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognitionClass) return;
+    const recognition = new SpeechRecognitionClass();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = "en-US";
+    recognition.onstart = () => { setChatMicListening(true); setChatInterimTranscript(""); };
+    recognition.onresult = (event: any) => {
+      let interim = "";
+      let final = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) { final += transcript; } else { interim += transcript; }
+      }
+      if (final) {
+        const replaced = replaceServiceKeywords(final);
+        setQuery((prev) => (prev + " " + replaced).trim());
+        setChatInterimTranscript("");
+      } else {
+        setChatInterimTranscript(interim);
+      }
+    };
+    recognition.onerror = () => { setChatMicListening(false); setChatInterimTranscript(""); };
+    recognition.onend = () => { setChatMicListening(false); setChatInterimTranscript(""); };
+    chatRecognitionRef.current = recognition;
+    try { recognition.start(); } catch { setChatMicListening(false); }
   };
 
   const handleAsk = () => {
@@ -1073,7 +1143,9 @@ export function HaloStrip(): React.JSX.Element {
             <path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/>
           </svg>
           {predictedTasks.length > 0 && (
-            <span className="notification-badge">{predictedTasks.length}</span>
+            <span className="notification-badge">
+              {predictedTasks.filter((t) => t.status !== "completed" && t.status !== "dismissed").length || predictedTasks.length}
+            </span>
           )}
         </div>
 
@@ -1092,48 +1164,60 @@ export function HaloStrip(): React.JSX.Element {
             </button>
           </div>
           <div className="task-panel-list">
-            {predictedTasks.map((task, index) => (
-              <div key={task.id || index} className="task-panel-card">
-                <div className="task-card-content">
-                  <div className="task-card-title">{task.title}</div>
-                  {task.description && (
-                    <div className="task-card-description">{task.description}</div>
-                  )}
-                  {task.service && (
-                    <span className="task-card-service">{task.service}</span>
-                  )}
+            {predictedTasks.map((task, index) => {
+              const isCompleted = task.status === "completed";
+              return (
+                <div key={task.id || index} className={`task-panel-card ${isCompleted ? "task-panel-card-completed" : ""}`}>
+                  <div className="task-card-content">
+                    <div className="task-card-title">{task.title}</div>
+                    {task.description && (
+                      <div className="task-card-description">{task.description}</div>
+                    )}
+                    <div className="task-card-meta">
+                      {task.service && (
+                        <span className="task-card-service">{task.service}</span>
+                      )}
+                      {isCompleted && (
+                        <span className="task-card-status-completed">Completed</span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="task-card-actions">
+                    {!isCompleted && (
+                      <>
+                        <button
+                          className="task-edit-btn"
+                          onClick={() => handleEditTask(task)}
+                          title="Edit details"
+                        >
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="12" height="12">
+                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                          </svg>
+                        </button>
+                        <button
+                          className="task-accept-btn"
+                          onClick={() => handleAcceptTask(task)}
+                          disabled={executingTaskId === task.id}
+                        >
+                          {executingTaskId === task.id ? "..." : "Accept"}
+                        </button>
+                      </>
+                    )}
+                    <button
+                      className="task-dismiss-btn"
+                      onClick={() => handleDismissTask(task.id)}
+                      title={isCompleted ? "Remove from list" : "Dismiss"}
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="12" height="12">
+                        <line x1="18" y1="6" x2="6" y2="18"/>
+                        <line x1="6" y1="6" x2="18" y2="18"/>
+                      </svg>
+                    </button>
+                  </div>
                 </div>
-                <div className="task-card-actions">
-                  <button
-                    className="task-edit-btn"
-                    onClick={() => handleEditTask(task)}
-                    title="Edit details"
-                  >
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="12" height="12">
-                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-                    </svg>
-                  </button>
-                  <button
-                    className="task-accept-btn"
-                    onClick={() => handleAcceptTask(task)}
-                    disabled={executingTaskId === task.id}
-                  >
-                    {executingTaskId === task.id ? "..." : "Accept"}
-                  </button>
-                  <button
-                    className="task-dismiss-btn"
-                    onClick={() => handleDismissTask(task.id)}
-                    title="Dismiss"
-                  >
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="12" height="12">
-                      <line x1="18" y1="6" x2="6" y2="18"/>
-                      <line x1="6" y1="6" x2="18" y2="18"/>
-                    </svg>
-                  </button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -1321,22 +1405,47 @@ export function HaloStrip(): React.JSX.Element {
             Try: @gmail draft... | @calendar create... | @tasks add...
           </div>
 
-          <input
-            className="halo-input"
-            placeholder={placeholder}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => {
-              e.stopPropagation();
-              if (e.key === "Enter") handleAsk();
-            }}
-            onKeyUp={(e) => e.stopPropagation()}
-            onKeyPress={(e) => e.stopPropagation()}
-            onClick={(e) => e.stopPropagation()}
-            onFocus={(e) => e.stopPropagation()}
-          />
+          <div className="halo-chat-input-row">
+            <input
+              className="halo-input"
+              placeholder={chatMicListening ? "Listening..." : placeholder}
+              value={query + (chatInterimTranscript ? " " + chatInterimTranscript : "")}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === "Enter") handleAsk();
+              }}
+              onKeyUp={(e) => e.stopPropagation()}
+              onKeyPress={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+              onFocus={(e) => e.stopPropagation()}
+              disabled={chatMicListening}
+            />
+            <button
+              className={`halo-chat-mic-btn ${chatMicListening ? "listening" : ""}`}
+              onClick={toggleChatMic}
+              title={chatMicListening ? "Stop listening" : "Voice input"}
+            >
+              {chatMicListening ? (
+                <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+                  <rect x="6" y="6" width="12" height="12" rx="2"/>
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+                  <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
+                  <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+                </svg>
+              )}
+            </button>
+          </div>
+          {chatMicListening && (
+            <div className="halo-chat-listening">
+              <div className="voice-wave"><span></span><span></span><span></span><span></span><span></span></div>
+              <span style={{ fontSize: '11px', color: '#8b5cf6' }}>Speak now... (say "gmail draft" for @gmail)</span>
+            </div>
+          )}
           <div className="halo-actions">
-            <button className="halo-btn send-btn" onClick={handleAsk}>
+            <button className="halo-btn send-btn" onClick={handleAsk} disabled={chatMicListening}>
               Send
             </button>
           </div>
@@ -1479,26 +1588,6 @@ export function HaloStrip(): React.JSX.Element {
             </div>
           )}
 
-          {/* Saved Suggestions */}
-          {savedSuggestions.length > 0 && (
-            <div className="halo-context-section">
-              <div className="halo-context-section-title">Your Suggestions</div>
-              <div className="context-suggestions-grid">
-                {savedSuggestions.slice(0, 5).map((s, i) => (
-                  <button
-                    key={i}
-                    className="context-suggestion-card"
-                    onClick={() => {
-                      window.dispatchEvent(new CustomEvent("cue:open-chat", { detail: { prompt: s } }));
-                    }}
-                  >
-                    {s}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
           {/* Settings */}
           <div className="halo-context-settings">
             <div className="halo-context-section-title">Settings</div>
@@ -1553,6 +1642,14 @@ export function HaloStrip(): React.JSX.Element {
               {voiceActivationEnabled && wakePhrase && (
                 <span className="halo-settings-hint">Say "{wakePhrase}" to open voice chat</span>
               )}
+              <button
+                type="button"
+                className="halo-btn"
+                style={{ marginTop: 8, fontSize: 12 }}
+                onClick={() => openVoiceChatPopup()}
+              >
+                Open voice chat
+              </button>
             </div>
           </div>
         </div>

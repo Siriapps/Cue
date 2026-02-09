@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 from app.agents.gemini_client import call_gemini
 
@@ -11,7 +11,7 @@ Do not reply with only a single word (e.g. "Done", "OK", "Yes"); always give a s
 """
 
 
-def ask_ai(query: str, context: Dict[str, Any]) -> Dict[str, Any]:
+def ask_ai(query: str, context: Dict[str, Any], conversation_history: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
     """Answer a user's question using Gemini 2.5 Flash."""
     page_title = context.get("page_title", "")
     current_url = context.get("current_url", "")
@@ -31,8 +31,17 @@ def ask_ai(query: str, context: Dict[str, Any]) -> Dict[str, Any]:
     if context_blob:
         context_text += f"\n\nExplicit user context (recent searches / AI chat snippets):\n{str(context_blob)[:8000]}"
 
-    prompt = f"{context_text}\n\nUser's question: {query}\n\nProvide a helpful answer."
-    
+    # Include conversation history for multi-turn chats
+    history_text = ""
+    if conversation_history:
+        history_text = "\n\nConversation history:\n"
+        for msg in conversation_history[-10:]:
+            role = msg.get("role", "user")
+            text = msg.get("text", "")
+            history_text += f"{role}: {text}\n"
+
+    prompt = f"{context_text}{history_text}\n\nUser's question: {query}\n\nProvide a helpful answer."
+
     parts = [{"text": prompt}]
     result = call_gemini(parts=parts, system_prompt=ASK_AI_PROMPT, response_mime_type="text/plain")
     
