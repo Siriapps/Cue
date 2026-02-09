@@ -504,38 +504,38 @@ async def suggest_tasks_endpoint(payload: SuggestTasksRequest) -> Dict[str, Any]
         return {"success": False, "error": "No context available to generate suggestions", "tasks": []}
 
     # Build the prompt for Gemini
+    # IMPORTANT: Do not return NULL services. If a task is informational or needs clarification,
+    # use gemini_chat (open) or antigravity (search) instead.
     prompt = f"""You have the following context about the user's recent activity:
 
 {full_context}
 
-Generate 3-5 tasks that would be useful for the user. You MUST include:
+Based on this context, generate 3-5 concrete, actionable tasks.
 
-1. **At least 2 tasks** that use the user's connected Google services (gmail, calendar, tasks, docs, drive, sheets). These should be concrete and actionable (e.g. draft an email, add a calendar event, create a doc, add a task). Use the context to make them relevant (names, subjects, dates).
+Hard rules:
+- Every task MUST have a non-null service and action.
+- Prefer Google services when possible: tasks, docs, gmail, calendar, sheets, drive.
+- If you do not have enough details to safely populate a Gmail/Calendar task, prefer a Tasks or Docs task.
+- If a task needs clarification, use service "gemini_chat" with action "open".
+- Do NOT invent details (recipients, dates, names). If missing, ask via gemini_chat.
 
-2. **Optionally 1-2 "chat continuation" tasks** where the user might want to continue a thought or ask a follow-up — use service "gemini_chat" with action "open" and params with "prompt" (the full question to ask Gemini) and "context" (brief context). These appear as clickable suggestions; when accepted, they open Gemini with the prompt ready.
-
-3. **At most 1 wellness/break suggestion** (e.g. "Take a 5-minute break", "Stretch and rest your eyes"). Use service null, action null, params null.
-
-Services and actions (use for Google and AI tasks):
-- gmail: draft (to, subject, body), send (to, subject, body)
-- calendar: create (title/summary, description, date, time)
+Services and actions:
+- gmail: draft (to, subject, body)
+- calendar: create (title, description, date, time)
 - tasks: add (title, notes, due)
 - docs: create (title, content)
 - sheets: create (title)
-- gemini_chat: open (prompt - full question/prompt for Gemini, context - optional brief context). Use for "continue this conversation", "ask Gemini about X", follow-up questions.
-- antigravity: search (prompt - research prompt)
-- openai_studio: open (prompt - for ChatGPT)
+- drive: find (query) or list (query)
+- gemini_chat: open (prompt, context)
+- antigravity: search (prompt)
+- openai_studio: open (prompt)
 
-Be specific. All tasks are saved and shown in the user's notifications and AI activity page; chat-style ones (gemini_chat) open Gemini with the prompt when accepted.
-
-Return ONLY a JSON array of objects with: title (string), description (string), service (string or null), action (string or null), params (object or null).
+Return ONLY a JSON array of objects with: title (string), description (string), service (string), action (string), params (object).
 
 Example:
 [
-  {{"title": "Draft hackathon submission email", "description": "Prepare email to submit your hackathon project", "service": "gmail", "action": "draft", "params": {{"to": "hackathon@example.com", "subject": "Hackathon Submission", "body": "Hi,\\n\\nPlease find attached our hackathon submission..."}}}},
-  {{"title": "Add team sync to calendar", "description": "Schedule a 30-min team sync this week", "service": "calendar", "action": "create", "params": {{"title": "Team sync", "description": "Weekly sync", "date": "", "time": ""}}}},
-  {{"title": "Ask Gemini to summarize next steps", "description": "Get a short summary of next steps from your recent context", "service": "gemini_chat", "action": "open", "params": {{"prompt": "Based on what I've been working on, give me 3 concrete next steps.", "context": "User's recent browsing and tasks"}}}},
-  {{"title": "Take a short break", "description": "Stand up, stretch, and rest your eyes for 5 minutes.", "service": null, "action": null, "params": null}}
+  {{"title": "Add next steps to Tasks", "description": "Capture the next steps mentioned in your recent context", "service": "tasks", "action": "add", "params": {{"title": "Next steps", "notes": "...", "due": ""}}}},
+  {{"title": "Ask Gemini for clarification", "description": "Ask a focused question to avoid guessing details", "service": "gemini_chat", "action": "open", "params": {{"prompt": "...", "context": "..."}}}}
 ]
 
 Return ONLY the JSON array, no markdown or explanation."""
@@ -588,17 +588,128 @@ Return ONLY the JSON array, no markdown or explanation."""
         # Limit to 5 tasks per batch
         tasks = tasks[:5]
 
-        # Validate and save tasks to MongoDB
+        def normalize_task(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            if not isinstance(raw, dict):
+                return None
+
+            title = (raw.get("title") or "Task").strip() or "Task"
+            description = (raw.get("description") or "").strip()
+
+            service = raw.get("service")
+            action = raw.get("action")
+            params = raw.get("params")
+
+            # Normalize null-like values
+            if isinstance(service, str):
+                service = service.strip().lower()
+            if isinstance(action, str):
+                action = action.strip().lower()
+            if service in (None, "", "null", "none"):
+                service = None
+            if action in (None, "", "null", "none"):
+                action = None
+            if not isinstance(params, dict):
+                params = {}
+
+            # If model gave NULL service/action, default to a safe, always-actionable Google Tasks item.
+            if service is None or action is None:
+                service = "tasks"
+                action = "add"
+                params = {
+                    "title": title[:180],
+                    "notes": (description or "").strip()[:2000],
+                    "due": "",
+                }
+
+            # Fill in defaults for known services to avoid NULL showing in the UI.
+            if service == "tasks":
+                if action not in ("add", "create"):
+                    action = "add"
+                params.setdefault("title", title[:180])
+                params.setdefault("notes", (description or "").strip()[:2000])
+                params.setdefault("due", "")
+
+            elif service == "docs":
+                if action not in ("create",):
+                    action = "create"
+                params.setdefault("title", title[:180])
+                params.setdefault("content", (description or "").strip()[:4000])
+
+            elif service == "gmail":
+                if action not in ("draft", "send"):
+                    action = "draft"
+                params.setdefault("to", "")
+                params.setdefault("subject", title[:180])
+                params.setdefault("body", (description or "").strip()[:4000])
+
+            elif service == "calendar":
+                if action not in ("create",):
+                    action = "create"
+                params.setdefault("title", title[:180])
+                params.setdefault("description", (description or "").strip()[:2000])
+                params.setdefault("date", "")
+                params.setdefault("time", "")
+
+            elif service == "sheets":
+                if action not in ("create",):
+                    action = "create"
+                params.setdefault("title", title[:180])
+
+            elif service == "drive":
+                if action not in ("find", "list"):
+                    action = "find"
+                params.setdefault("query", title[:200])
+
+            elif service == "gemini_chat":
+                if action not in ("open",):
+                    action = "open"
+                params.setdefault(
+                    "prompt",
+                    f"Based on my recent browsing/activity, help me with: {title}. {description}".strip()[:2000],
+                )
+                params.setdefault("context", full_context[:2000])
+
+            elif service == "antigravity":
+                if action not in ("search",):
+                    action = "search"
+                params.setdefault(
+                    "prompt",
+                    f"Research: {title}. {description}\n\nContext:\n{full_context[:2000]}".strip()[:3000],
+                )
+
+            elif service == "openai_studio":
+                if action not in ("open",):
+                    action = "open"
+                params.setdefault(
+                    "prompt",
+                    f"{title}\n\n{description}\n\nContext:\n{full_context[:2000]}".strip()[:3000],
+                )
+
+            else:
+                # Unknown service -> fallback to gemini_chat
+                service = "gemini_chat"
+                action = "open"
+                params = {
+                    "prompt": f"Based on my recent browsing/activity, help me with: {title}. {description}".strip()[:2000],
+                    "context": full_context[:2000],
+                }
+
+            return {
+                "title": title,
+                "description": description,
+                "service": service,
+                "action": action,
+                "params": params,
+            }
+
+        # Validate, normalize, and save tasks to MongoDB
         saved_tasks = []
         for task in tasks:
-            if not isinstance(task, dict):
+            normalized = normalize_task(task)
+            if not normalized:
                 continue
             task_data = {
-                "title": task.get("title", "Task"),
-                "description": task.get("description", ""),
-                "service": task.get("service"),
-                "action": task.get("action"),
-                "params": task.get("params"),
+                **normalized,
                 "status": "pending",
                 "source_context": {
                     "page_title": page_title,
